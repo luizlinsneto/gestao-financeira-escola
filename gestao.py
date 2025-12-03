@@ -29,13 +29,11 @@ def init_firebase():
         cred = None
 
         # 1. Tenta pegar dos Segredos do Streamlit (apenas se estiver na nuvem)
-        # O try/except evita que o programa trave no seu computador se não houver secrets
         try:
             if "firebase" in st.secrets:
                 cred_info = dict(st.secrets["firebase"])
                 cred = credentials.Certificate(cred_info)
         except Exception:
-            # Ignora erros de secrets (significa que estamos rodando localmente)
             pass
 
         # 2. Se não achou na nuvem, tenta pegar de arquivo local (seu computador)
@@ -53,7 +51,7 @@ def init_firebase():
             # Se não achar nada, avisa o usuário
             st.warning("⚠️ Atenção: Banco de dados não conectado.")
             st.info(
-                "Certifique-se de que o arquivo 'firebase_key.json' está na mesma pasta do 'gestao.py'."
+                "Certifique-se de que o arquivo 'firebase_key.json' está na mesma pasta do 'gestao.py' ou configure os Secrets na nuvem."
             )
             return None
 
@@ -443,12 +441,15 @@ def render_year_view(conta_atual, ano_atual, programas):
                 )
                 saldo_total = saldo_acumulado_cap + saldo_acumulado_cus
 
+                # ADICIONADO: Colunas separadas de rendimento
                 dados_tabela.append(
                     {
                         "Programa": p,
                         "Mês": meses[m["mes_num"]],
                         "Crédito": m["total_credito"],
-                        "Rendimentos": m["total_rendimento"],
+                        "Rend. Cap.": m["rendimento_capital"],
+                        "Rend. Cust.": m["rendimento_custeio"],
+                        "Rend. Total": m["total_rendimento"],
                         "Débito": m["total_debito"],
                         "S. Custeio": saldo_acumulado_cus,
                         "S. Capital": saldo_acumulado_cap,
@@ -460,7 +461,9 @@ def render_year_view(conta_atual, ano_atual, programas):
                 df_prog = pd.DataFrame(dados_tabela)
 
                 total_credito = df_prog["Crédito"].sum()
-                total_rendimento = df_prog["Rendimentos"].sum()
+                total_rend_cap = df_prog["Rend. Cap."].sum()
+                total_rend_cus = df_prog["Rend. Cust."].sum()
+                total_rendimento = df_prog["Rend. Total"].sum()
                 total_debito = df_prog["Débito"].sum()
 
                 ultimo_cus = df_prog["S. Custeio"].iloc[-1]
@@ -473,7 +476,9 @@ def render_year_view(conta_atual, ano_atual, programas):
                             "Programa": "TOTAL",
                             "Mês": "---",
                             "Crédito": total_credito,
-                            "Rendimentos": total_rendimento,
+                            "Rend. Cap.": total_rend_cap,
+                            "Rend. Cust.": total_rend_cus,
+                            "Rend. Total": total_rendimento,
                             "Débito": total_debito,
                             "S. Custeio": ultimo_cus,
                             "S. Capital": ultimo_cap,
@@ -494,11 +499,14 @@ def render_year_view(conta_atual, ano_atual, programas):
                     ] * len(row)
                 return [""] * len(row)
 
+            # ATUALIZADO: Formatação para incluir as novas colunas
             st.dataframe(
                 df_final.style.format(
                     {
                         "Crédito": "R$ {:,.2f}",
-                        "Rendimentos": "R$ {:,.2f}",
+                        "Rend. Cap.": "R$ {:,.2f}",
+                        "Rend. Cust.": "R$ {:,.2f}",
+                        "Rend. Total": "R$ {:,.2f}",
                         "Débito": "R$ {:,.2f}",
                         "S. Custeio": "R$ {:,.2f}",
                         "S. Capital": "R$ {:,.2f}",
