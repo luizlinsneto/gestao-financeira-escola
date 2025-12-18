@@ -295,7 +295,7 @@ def sidebar_config():
     st.sidebar.subheader("📍 Navegação")
     modulo_selecionado = st.sidebar.radio(
         "Módulo",
-        ["🏦 Movimentação Financeira", "📜 Controle de Empenhos"],
+        ["🏦 Movimentação Financeira", "📜 Controle de Empenhos", "📈 Resumo Consolidado"],
         label_visibility="collapsed"
     )
     st.sidebar.divider()
@@ -303,17 +303,15 @@ def sidebar_config():
     conta_selecionada = None
 
     if modulo_selecionado == "🏦 Movimentação Financeira":
-        # Correção: Ordenar a lista e adicionar key ao selectbox
         contas_existentes = sorted(list(st.session_state['accounts'].keys()))
 
         if contas_existentes:
             conta_selecionada = st.sidebar.selectbox(
                 "📂 Selecione a Conta",
                 options=contas_existentes,
-                key="sidebar_conta_select"  # KEY para garantir que o Streamlit rastreie a mudança
+                key="sidebar_conta_select"
             )
 
-            # Força leitura direta do estado para garantir atualização
             dados_conta_atual = st.session_state['accounts'].get(
                 conta_selecionada, {})
             progs_conta = dados_conta_atual.get('programas', [])
@@ -471,6 +469,8 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
 
         st.divider()
         dados_entrada = {}
+        has_error = False
+
         for prog in programas:
             prog_data = next(
                 (m for m in registros_existentes if m['programa'] == prog), None)
@@ -479,15 +479,16 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             v_dc = float(prog_data['debito_capital']) if prog_data else 0.0
             v_dec = float(prog_data['debito_custeio']) if prog_data else 0.0
 
+            saldo_disp_cap = get_saldo_anterior(
+                conta_atual, prog, 'Capital', mes_selecionado, ano_atual)
+            saldo_disp_cust = get_saldo_anterior(
+                conta_atual, prog, 'Custeio', mes_selecionado, ano_atual)
+
             with st.expander(f"Movimento: {prog}", expanded=True):
                 c1, c2, c3, c4 = st.columns(4)
-                saldo_ant_cap = get_saldo_anterior(
-                    conta_atual, prog, 'Capital', mes_selecionado, ano_atual)
-                saldo_ant_cus = get_saldo_anterior(
-                    conta_atual, prog, 'Custeio', mes_selecionado, ano_atual)
 
                 st.markdown(
-                    f"**Saldo Ant.:** Cap: {format_currency(saldo_ant_cap)} | Cust: {format_currency(saldo_ant_cus)}")
+                    f"**Saldo Ant.:** Cap: {format_currency(saldo_disp_cap)} | Cust: {format_currency(saldo_disp_cust)}")
 
                 k_suf = f"{conta_atual}_{prog}_{ano_atual}_{mes_selecionado}"
                 cred_cap = c1.number_input(
@@ -498,22 +499,40 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                     f"Déb. Capital", min_value=0.0, value=v_dc, key=f"dc_{k_suf}")
                 deb_cus = c4.number_input(
                     f"Déb. Custeio", min_value=0.0, value=v_dec, key=f"dec_{k_suf}")
+
+                saldo_proj_cap = saldo_disp_cap + cred_cap - deb_cap
+                saldo_proj_cust = saldo_disp_cust + cred_cus - deb_cus
+
+                if saldo_proj_cap < 0:
+                    st.error(
+                        f"⚠️ Atenção: Saldo de Capital ficará negativo ({format_currency(saldo_proj_cap)})!")
+                    has_error = True
+
+                if saldo_proj_cust < 0:
+                    st.error(
+                        f"⚠️ Atenção: Saldo de Custeio ficará negativo ({format_currency(saldo_proj_cust)})!")
+                    has_error = True
+
                 dados_entrada[prog] = {
                     'cred_cap': cred_cap, 'cred_cus': cred_cus, 'deb_cap': deb_cap, 'deb_cus': deb_cus}
 
         if st.button(f"💾 Salvar Lançamento {meses[mes_selecionado]}/{ano_atual}", type="primary", key=f"btn_save_{conta_atual}_{ano_atual}_{mes_selecionado}"):
-            novos_registros = calcular_rateio_rendimento(
-                conta_atual, mes_selecionado, ano_atual, rendimento_total, dados_entrada)
-            lista_atual = st.session_state['accounts'][conta_atual].get(
-                'movimentacoes', [])
-            lista_limpa = [m for m in lista_atual if not (
-                m['mes_num'] == mes_selecionado and m.get('ano', datetime.now().year) == ano_atual)]
-            lista_limpa.extend(novos_registros)
-            st.session_state['accounts'][conta_atual]['movimentacoes'] = lista_limpa
-            save_account_to_firebase(
-                st.session_state['db_conn'], conta_atual, st.session_state['accounts'][conta_atual])
-            st.success("Dados salvos com sucesso!")
-            st.rerun()
+            if has_error:
+                st.error(
+                    "❌ Não é possível salvar pois há saldos negativos. Verifique os valores de débito.")
+            else:
+                novos_registros = calcular_rateio_rendimento(
+                    conta_atual, mes_selecionado, ano_atual, rendimento_total, dados_entrada)
+                lista_atual = st.session_state['accounts'][conta_atual].get(
+                    'movimentacoes', [])
+                lista_limpa = [m for m in lista_atual if not (
+                    m['mes_num'] == mes_selecionado and m.get('ano', datetime.now().year) == ano_atual)]
+                lista_limpa.extend(novos_registros)
+                st.session_state['accounts'][conta_atual]['movimentacoes'] = lista_limpa
+                save_account_to_firebase(
+                    st.session_state['db_conn'], conta_atual, st.session_state['accounts'][conta_atual])
+                st.success("Dados salvos com sucesso!")
+                st.rerun()
 
     with tab_rel:
         st.subheader(f"Extrato Mensal Detalhado - {ano_atual}")
@@ -544,9 +563,16 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 saldo_total = saldo_acumulado_cap + saldo_acumulado_cus
                 dados_tabela.append({
                     "Programa": p, "Mês": meses[m['mes_num']],
-                    "Crédito": m['total_credito'], "Rend. Cap.": m['rendimento_capital'],
-                    "Rend. Cust.": m['rendimento_custeio'], "Rend. Total": m['total_rendimento'],
-                    "Débito": m['total_debito'], "S. Custeio": saldo_acumulado_cus,
+                    "Créd. Cap.": m['credito_capital'],
+                    "Créd. Cust.": m['credito_custeio'],
+                    "Créd. Total": m['total_credito'],
+                    "Rend. Cap.": m['rendimento_capital'],
+                    "Rend. Cust.": m['rendimento_custeio'],
+                    "Rend. Total": m['total_rendimento'],
+                    "Déb. Cap.": m['debito_capital'],
+                    "Déb. Cust.": m['debito_custeio'],
+                    "Déb. Total": m['total_debito'],
+                    "S. Custeio": saldo_acumulado_cus,
                     "S. Capital": saldo_acumulado_cap, "S. Total": saldo_total
                 })
 
@@ -554,10 +580,10 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 df_prog = pd.DataFrame(dados_tabela)
                 linha_total = pd.DataFrame([{
                     "Programa": "TOTAL", "Mês": "---",
-                    "Crédito": df_prog["Crédito"].sum(), "Rend. Cap.": df_prog["Rend. Cap."].sum(),
-                    "Rend. Cust.": df_prog["Rend. Cust."].sum(), "Rend. Total": df_prog["Rend. Total"].sum(),
-                    "Débito": df_prog["Débito"].sum(), "S. Custeio": df_prog["S. Custeio"].iloc[-1],
-                    "S. Capital": df_prog["S. Capital"].iloc[-1], "S. Total": df_prog["S. Total"].iloc[-1]
+                    "Créd. Cap.": df_prog["Créd. Cap."].sum(), "Créd. Cust.": df_prog["Créd. Cust."].sum(), "Créd. Total": df_prog["Créd. Total"].sum(),
+                    "Rend. Cap.": df_prog["Rend. Cap."].sum(), "Rend. Cust.": df_prog["Rend. Cust."].sum(), "Rend. Total": df_prog["Rend. Total"].sum(),
+                    "Déb. Cap.": df_prog["Déb. Cap."].sum(), "Déb. Cust.": df_prog["Déb. Cust."].sum(), "Déb. Total": df_prog["Déb. Total"].sum(),
+                    "S. Custeio": df_prog["S. Custeio"].iloc[-1], "S. Capital": df_prog["S. Capital"].iloc[-1], "S. Total": df_prog["S. Total"].iloc[-1]
                 }])
                 df_final = pd.concat(
                     [df_final, df_prog, linha_total], ignore_index=True)
@@ -565,16 +591,19 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         if not df_final.empty:
             def highlight_total(row):
                 return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Programa'] == 'TOTAL' else [''] * len(row)
+
             st.dataframe(df_final.style.format({
-                "Crédito": "R$ {:,.2f}", "Rend. Cap.": "R$ {:,.2f}", "Rend. Cust.": "R$ {:,.2f}",
-                "Rend. Total": "R$ {:,.2f}", "Débito": "R$ {:,.2f}", "S. Custeio": "R$ {:,.2f}",
-                "S. Capital": "R$ {:,.2f}", "S. Total": "R$ {:,.2f}",
+                "Créd. Cap.": "R$ {:,.2f}", "Créd. Cust.": "R$ {:,.2f}", "Créd. Total": "R$ {:,.2f}",
+                "Rend. Cap.": "R$ {:,.2f}", "Rend. Cust.": "R$ {:,.2f}",
+                "Rend. Total": "R$ {:,.2f}", "Déb. Cap.": "R$ {:,.2f}", "Déb. Cust.": "R$ {:,.2f}", "Déb. Total": "R$ {:,.2f}",
+                "S. Custeio": "R$ {:,.2f}", "S. Capital": "R$ {:,.2f}", "S. Total": "R$ {:,.2f}",
             }).apply(highlight_total, axis=1), use_container_width=True, height=500)
         else:
             st.info(f"Nenhuma movimentação em {ano_atual}.")
 
     with tab_resumo:
-        st.markdown("### 📊 Resumo Geral e Demonstrativo FNDE")
+        # === MUDANÇA DE NOME SOLICITADA ===
+        st.markdown("### 📊 Resumo Geral e Demonstrativo da Conta")
         st.divider()
         st.markdown("#### 📑 Simulação do Demonstrativo (Bloco 2)")
         prog_demo = st.selectbox("Selecione o Programa para Detalhar:",
@@ -612,7 +641,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             df_demo = pd.DataFrame([
                 {"Descrição": "08 - Saldo Reprogramado",
                     "Custeio": s_reprog_cust, "Capital": s_reprog_cap},
-                {"Descrição": "09 - Valor Creditado pelo FNDE",
+                {"Descrição": "09 - Valor Creditado",
                     "Custeio": cred_cust, "Capital": cred_cap},
                 {"Descrição": "10 - Recursos Próprios",
                     "Custeio": rec_prop_cust, "Capital": rec_prop_cap},
@@ -631,7 +660,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
 
             def highlight_demo_rows(row):
                 if "13 - VALOR" in row['Descrição'] or "15 - Saldo" in row['Descrição']:
-                    # AJUSTE DA COR DA FONTE PARA PRETO
                     return ['background-color: #e0f2f1; color: black; font-weight: bold'] * len(row)
                 return [''] * len(row)
             st.dataframe(df_demo.style.format({
@@ -1007,6 +1035,111 @@ def render_empenhos_global_view():
                                 st.session_state['empenho_mode'] = 'list'
                                 st.rerun()
 
+# === VISUALIZAÇÃO 3: RESUMO CONSOLIDADO (NOVO) ===
+
+
+def render_resumo_consolidado_view():
+    st.subheader("📈 Resumo Geral Consolidado (Todas as Contas)")
+
+    anos_disp = sorted(st.session_state.get(
+        'available_years', [datetime.now().year]))
+    str_anos = [str(a) for a in anos_disp]
+
+    # Filtro de Ano
+    col_filtro, _ = st.columns([1, 3])
+    ano_selecionado = col_filtro.selectbox(
+        "Selecione o Ano:", str_anos, index=len(str_anos)-1)
+    ano_int = int(ano_selecionado)
+
+    # 1. Calcular Totais
+    total_recebido = 0.0
+    total_gasto = 0.0
+    total_saldo_atual = 0.0
+
+    # Lista para a Tabela Detalhada
+    lista_detalhada = []
+
+    # Itera sobre todas as contas
+    for nome_conta, dados_conta in st.session_state['accounts'].items():
+        movs = dados_conta.get('movimentacoes', [])
+        progs = dados_conta.get('programas', [])
+
+        # Filtra movimentos do ano
+        movs_ano = [m for m in movs if m.get('ano') == ano_int]
+
+        # Calcula Totais da Conta
+        saldo_inicial_conta = 0.0
+        creditos_conta = sum(m['total_credito'] for m in movs_ano)
+        rendimentos_conta = sum(m['total_rendimento'] for m in movs_ano)
+        debitos_conta = sum(m['total_debito'] for m in movs_ano)
+
+        # Para saldo inicial, somamos o saldo de todos os programas
+        for p in progs:
+            saldo_inicial_conta += get_saldo_anterior(
+                nome_conta, p, 'Total', 1, ano_int)
+
+        receita_total_conta = saldo_inicial_conta + creditos_conta + rendimentos_conta
+        saldo_final_conta = receita_total_conta - debitos_conta
+
+        # Acumula nos totais gerais
+        # Entradas puras no ano
+        total_recebido += (creditos_conta + rendimentos_conta)
+        total_gasto += debitos_conta
+        total_saldo_atual += saldo_final_conta
+
+        lista_detalhada.append({
+            "Conta": nome_conta,
+            "Saldo Anterior": saldo_inicial_conta,
+            "Créditos": creditos_conta,
+            "Rendimentos": rendimentos_conta,
+            "Débitos": debitos_conta,
+            "Saldo Final": saldo_final_conta
+        })
+
+    # 2. Exibir Cartões de Métricas
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Entradas (Créd + Rend)",
+                format_currency(total_recebido), delta_color="normal")
+    col2.metric("Total Saídas (Débitos)", format_currency(
+        total_gasto), delta_color="inverse")  # Vermelho se subir
+    col3.metric("Saldo Geral Acumulado", format_currency(total_saldo_atual))
+
+    st.divider()
+
+    # 3. Tabela Detalhada por Conta
+    st.markdown(f"#### Detalhamento por Conta - {ano_int}")
+    if lista_detalhada:
+        df_resumo = pd.DataFrame(lista_detalhada)
+
+        # Adiciona Linha de Total
+        linha_total = {
+            "Conta": "TOTAL GERAL",
+            "Saldo Anterior": df_resumo["Saldo Anterior"].sum(),
+            "Créditos": df_resumo["Créditos"].sum(),
+            "Rendimentos": df_resumo["Rendimentos"].sum(),
+            "Débitos": df_resumo["Débitos"].sum(),
+            "Saldo Final": df_resumo["Saldo Final"].sum()
+        }
+        df_resumo = pd.concat(
+            [df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
+
+        def highlight_total(row):
+            return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Conta'] == 'TOTAL GERAL' else [''] * len(row)
+
+        st.dataframe(
+            df_resumo.style.format({
+                "Saldo Anterior": "R$ {:,.2f}",
+                "Créditos": "R$ {:,.2f}",
+                "Rendimentos": "R$ {:,.2f}",
+                "Débitos": "R$ {:,.2f}",
+                "Saldo Final": "R$ {:,.2f}"
+            }).apply(highlight_total, axis=1),
+            use_container_width=True,
+            height=400
+        )
+    else:
+        st.info("Nenhuma conta encontrada.")
+
 
 def main():
     init_session_state()
@@ -1084,8 +1217,11 @@ def main():
         else:
             st.warning("Cadastre programas acima para começar.")
 
-    else:
+    elif modulo_selecionado == "📜 Controle de Empenhos":
         render_empenhos_global_view()
+
+    elif modulo_selecionado == "📈 Resumo Consolidado":
+        render_resumo_consolidado_view()
 
 
 if __name__ == "__main__":
