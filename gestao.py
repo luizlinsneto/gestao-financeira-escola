@@ -25,6 +25,14 @@ st.markdown("""
         margin-bottom: 10px;
     }
     .row-header { font-weight: bold; border-bottom: 2px solid #ddd; padding: 5px; }
+    .warning-box {
+        padding: 10px;
+        background-color: #fef2f2;
+        border: 1px solid #fecaca;
+        border-radius: 5px;
+        color: #991b1b;
+        margin-top: 10px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -33,7 +41,6 @@ st.markdown("""
 
 @st.cache_resource
 def init_firebase():
-    """Inicializa a conexão com Firebase apenas uma vez e mantém em cache."""
     if not firebase_admin._apps:
         cred = None
         if os.path.exists("firebase_key.json"):
@@ -57,7 +64,7 @@ def init_firebase():
             return None
     return firestore.client()
 
-# --- FUNÇÕES DE BANCO DE DADOS (CRUD) ---
+# --- FUNÇÕES CRUD ---
 
 
 def load_accounts_from_firebase(db):
@@ -99,7 +106,7 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES PARA ARQUIVOS ---
+# --- FUNÇÕES ARQUIVOS ---
 
 
 def save_file_to_firebase(db, empenho_id, file_obj):
@@ -141,7 +148,7 @@ def delete_file_from_firebase(db, empenho_id):
     except:
         pass
 
-# --- FUNÇÕES DE SALVAMENTO ---
+# --- FUNÇÕES SALVAMENTO ---
 
 
 def save_account_to_firebase(db, account_name, account_data):
@@ -202,11 +209,27 @@ def save_global_programs_to_firebase(db, lista_programas):
     except Exception as e:
         st.error(f"Erro ao salvar programas globais: {e}")
 
-# --- FUNÇÕES AUXILIARES ---
+# --- AUXILIARES (FORMATAÇÃO CORRIGIDA) ---
 
 
 def format_currency(value):
-    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    """
+    Formata valor float para moeda brasileira:
+    1234.56 -> R$ 1.234,56
+    """
+    if value is None:
+        value = 0.0
+    s = "{:,.2f}".format(value)
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
+
+
+def apply_currency_format(df, cols):
+    for col in cols:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: f"R$ {x:,.2f}".replace(
+                ",", "X").replace(".", ",").replace("X", "."))
+    return df
 
 
 def init_session_state():
@@ -262,10 +285,14 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
         saldo += val
 
     for mov in movs:
-        mov_ano = mov.get('ano', datetime.now().year)
+        try:
+            mov_ano = int(mov.get('ano', datetime.now().year))
+        except:
+            mov_ano = datetime.now().year
+
         mov_mes = mov['mes_num']
-        eh_passado = (mov_ano < ano_alvo) or (
-            mov_ano == ano_alvo and mov_mes < mes_alvo)
+        eh_passado = (mov_ano < int(ano_alvo)) or (
+            mov_ano == int(ano_alvo) and mov_mes < int(mes_alvo))
 
         if mov['programa'] == programa and eh_passado:
             if tipo_recurso == 'Capital':
@@ -279,14 +306,12 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
                           mov['total_rendimento'] - mov['total_debito'])
     return saldo
 
-# --- BARRA LATERAL ---
-
 
 def sidebar_config():
     if st.session_state['db_conn'] is None:
         st.sidebar.error("⚠️ Sem conexão com Banco de Dados")
 
-    if st.sidebar.button("🔄 Recarregar Dados", help="Clique se os dados da barra lateral estiverem diferentes da tela principal"):
+    if st.sidebar.button("🔄 Recarregar Dados", help="Use se notar dados desatualizados"):
         st.cache_resource.clear()
         for key in list(st.session_state.keys()):
             del st.session_state[key]
@@ -304,18 +329,12 @@ def sidebar_config():
 
     if modulo_selecionado == "🏦 Movimentação Financeira":
         contas_existentes = sorted(list(st.session_state['accounts'].keys()))
-
         if contas_existentes:
             conta_selecionada = st.sidebar.selectbox(
-                "📂 Selecione a Conta",
-                options=contas_existentes,
-                key="sidebar_conta_select"
-            )
-
+                "📂 Selecione a Conta", options=contas_existentes, key="sidebar_conta_select")
             dados_conta_atual = st.session_state['accounts'].get(
                 conta_selecionada, {})
             progs_conta = dados_conta_atual.get('programas', [])
-
             if progs_conta:
                 st.sidebar.markdown("**📌 Programas Vinculados:**")
                 texto_progs = "\n".join([f"• {p}" for p in progs_conta])
@@ -327,7 +346,6 @@ def sidebar_config():
         with st.sidebar.expander("⚙️ Gerenciar Contas"):
             tab_criar, tab_renomear, tab_del = st.tabs(
                 ["Criar", "Renomear", "Excluir"])
-
             with tab_criar:
                 nova_conta = st.text_input(
                     "Nome da Nova Conta", placeholder="Ex: 27.922-6")
@@ -342,14 +360,12 @@ def sidebar_config():
                         st.rerun()
                     elif nova_conta in st.session_state['accounts']:
                         st.warning("Conta já existe.")
-
             with tab_renomear:
                 if contas_existentes:
                     conta_alvo = st.selectbox(
                         "Conta Atual:", contas_existentes, key="sel_ren_acc")
                     novo_nome_conta = st.text_input(
                         "Novo Nome:", key="ipt_ren_acc")
-
                     if st.button("✏️ Renomear", type="primary"):
                         if novo_nome_conta and novo_nome_conta not in contas_existentes:
                             success = rename_account_in_firebase(
@@ -366,7 +382,6 @@ def sidebar_config():
                             st.warning("Nome já existe!")
                 else:
                     st.info("Sem contas.")
-
             with tab_del:
                 if contas_existentes:
                     conta_del = st.selectbox(
@@ -392,7 +407,6 @@ def sidebar_config():
                 st.rerun()
             else:
                 st.warning("Este ano já existe.")
-
     return modulo_selecionado, conta_selecionada
 
 
@@ -418,10 +432,8 @@ def calcular_rateio_rendimento(conta, mes_num, ano, rendimento_total_banco, dado
             total_saldo_conta if total_saldo_conta > 0 else 0
         fator_cus = base_prog['Custeio'] / \
             total_saldo_conta if total_saldo_conta > 0 else 0
-
         rend_cap = rendimento_total_banco * fator_cap
         rend_cus = rendimento_total_banco * fator_cus
-
         resultados.append({
             'programa': prog, 'mes_num': mes_num, 'ano': ano,
             'credito_capital': valores['cred_cap'], 'credito_custeio': valores['cred_cus'],
@@ -433,18 +445,15 @@ def calcular_rateio_rendimento(conta, mes_num, ano, rendimento_total_banco, dado
         })
     return resultados
 
-# === VISUALIZAÇÃO 1: MÓDULO FINANCEIRO ===
-
 
 def render_financeiro_view(conta_atual, ano_atual, programas):
     tab_lanc, tab_rel, tab_resumo = st.tabs(
-        ["📝 Lançamentos", "📑 Extrato Mensal", "📊 Resumo Anual"])
+        ["📝 Lançamentos", "📑 Extrato Mensal", "📊 Resumo Geral"])
 
     with tab_lanc:
         col_mes, col_rend = st.columns([1, 2])
         meses = {1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho',
                  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'}
-
         with col_mes:
             mes_selecionado = st.selectbox("Mês", options=list(meses.keys(
             )), format_func=lambda x: meses[x], key=f"sel_mes_{conta_atual}_{ano_atual}")
@@ -453,11 +462,9 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             'movimentacoes', [])
         registros_existentes = [m for m in movs if m['mes_num'] == mes_selecionado and m.get(
             'ano', datetime.now().year) == ano_atual]
-
-        val_rendimento_inicial = 0.0
+        val_rendimento_inicial = sum(
+            [m['total_rendimento'] for m in registros_existentes]) if registros_existentes else 0.0
         if registros_existentes:
-            val_rendimento_inicial = sum(
-                [m['total_rendimento'] for m in registros_existentes])
             st.info(f"✏️ Editando dados de {meses[mes_selecionado]}.")
 
         with col_rend:
@@ -470,7 +477,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         st.divider()
         dados_entrada = {}
         has_error = False
-
         for prog in programas:
             prog_data = next(
                 (m for m in registros_existentes if m['programa'] == prog), None)
@@ -486,10 +492,8 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
 
             with st.expander(f"Movimento: {prog}", expanded=True):
                 c1, c2, c3, c4 = st.columns(4)
-
                 st.markdown(
                     f"**Saldo Ant.:** Cap: {format_currency(saldo_disp_cap)} | Cust: {format_currency(saldo_disp_cust)}")
-
                 k_suf = f"{conta_atual}_{prog}_{ano_atual}_{mes_selecionado}"
                 cred_cap = c1.number_input(
                     f"Créd. Capital", min_value=0.0, value=v_cc, key=f"cc_{k_suf}")
@@ -502,32 +506,29 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
 
                 saldo_proj_cap = saldo_disp_cap + cred_cap - deb_cap
                 saldo_proj_cust = saldo_disp_cust + cred_cus - deb_cus
-
                 if saldo_proj_cap < 0:
                     st.error(
                         f"⚠️ Atenção: Saldo de Capital ficará negativo ({format_currency(saldo_proj_cap)})!")
                     has_error = True
-
                 if saldo_proj_cust < 0:
                     st.error(
                         f"⚠️ Atenção: Saldo de Custeio ficará negativo ({format_currency(saldo_proj_cust)})!")
                     has_error = True
-
                 dados_entrada[prog] = {
                     'cred_cap': cred_cap, 'cred_cus': cred_cus, 'deb_cap': deb_cap, 'deb_cus': deb_cus}
 
         if st.button(f"💾 Salvar Lançamento {meses[mes_selecionado]}/{ano_atual}", type="primary", key=f"btn_save_{conta_atual}_{ano_atual}_{mes_selecionado}"):
             if has_error:
                 st.error(
-                    "❌ Não é possível salvar pois há saldos negativos. Verifique os valores de débito.")
+                    "❌ Não é possível salvar pois há saldos negativos. Verifique os valores.")
             else:
-                novos_registros = calcular_rateio_rendimento(
+                novos = calcular_rateio_rendimento(
                     conta_atual, mes_selecionado, ano_atual, rendimento_total, dados_entrada)
                 lista_atual = st.session_state['accounts'][conta_atual].get(
                     'movimentacoes', [])
                 lista_limpa = [m for m in lista_atual if not (
                     m['mes_num'] == mes_selecionado and m.get('ano', datetime.now().year) == ano_atual)]
-                lista_limpa.extend(novos_registros)
+                lista_limpa.extend(novos)
                 st.session_state['accounts'][conta_atual]['movimentacoes'] = lista_limpa
                 save_account_to_firebase(
                     st.session_state['db_conn'], conta_atual, st.session_state['accounts'][conta_atual])
@@ -550,7 +551,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 conta_atual, p, 'Capital', 1, ano_atual)
             saldo_acumulado_cus = get_saldo_anterior(
                 conta_atual, p, 'Custeio', 1, ano_atual)
-
             movs_prog_ano = [m for m in movs if m['programa'] ==
                              p and m.get('ano', datetime.now().year) == ano_atual]
             movs_prog_ano.sort(key=lambda x: x['mes_num'])
@@ -563,17 +563,10 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 saldo_total = saldo_acumulado_cap + saldo_acumulado_cus
                 dados_tabela.append({
                     "Programa": p, "Mês": meses[m['mes_num']],
-                    "Créd. Cap.": m['credito_capital'],
-                    "Créd. Cust.": m['credito_custeio'],
-                    "Créd. Total": m['total_credito'],
-                    "Rend. Cap.": m['rendimento_capital'],
-                    "Rend. Cust.": m['rendimento_custeio'],
-                    "Rend. Total": m['total_rendimento'],
-                    "Déb. Cap.": m['debito_capital'],
-                    "Déb. Cust.": m['debito_custeio'],
-                    "Déb. Total": m['total_debito'],
-                    "S. Custeio": saldo_acumulado_cus,
-                    "S. Capital": saldo_acumulado_cap, "S. Total": saldo_total
+                    "Créd. Cap.": m['credito_capital'], "Créd. Cust.": m['credito_custeio'], "Créd. Total": m['total_credito'],
+                    "Rend. Cap.": m['rendimento_capital'], "Rend. Cust.": m['rendimento_custeio'], "Rend. Total": m['total_rendimento'],
+                    "Déb. Cap.": m['debito_capital'], "Déb. Cust.": m['debito_custeio'], "Déb. Total": m['total_debito'],
+                    "S. Custeio": saldo_acumulado_cus, "S. Capital": saldo_acumulado_cap, "S. Total": saldo_total
                 })
 
             if dados_tabela:
@@ -592,17 +585,19 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             def highlight_total(row):
                 return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Programa'] == 'TOTAL' else [''] * len(row)
 
-            st.dataframe(df_final.style.format({
-                "Créd. Cap.": "R$ {:,.2f}", "Créd. Cust.": "R$ {:,.2f}", "Créd. Total": "R$ {:,.2f}",
-                "Rend. Cap.": "R$ {:,.2f}", "Rend. Cust.": "R$ {:,.2f}",
-                "Rend. Total": "R$ {:,.2f}", "Déb. Cap.": "R$ {:,.2f}", "Déb. Cust.": "R$ {:,.2f}", "Déb. Total": "R$ {:,.2f}",
-                "S. Custeio": "R$ {:,.2f}", "S. Capital": "R$ {:,.2f}", "S. Total": "R$ {:,.2f}",
-            }).apply(highlight_total, axis=1), use_container_width=True, height=500)
+            cols_to_format = [
+                "Créd. Cap.", "Créd. Cust.", "Créd. Total",
+                "Rend. Cap.", "Rend. Cust.", "Rend. Total",
+                "Déb. Cap.", "Déb. Cust.", "Déb. Total",
+                "S. Custeio", "S. Capital", "S. Total"
+            ]
+            df_display = apply_currency_format(df_final.copy(), cols_to_format)
+            st.dataframe(df_display.style.apply(highlight_total,
+                         axis=1), use_container_width=True, height=500)
         else:
             st.info(f"Nenhuma movimentação em {ano_atual}.")
 
     with tab_resumo:
-        # === MUDANÇA DE NOME SOLICITADA ===
         st.markdown("### 📊 Resumo Geral e Demonstrativo da Conta")
         st.divider()
         st.markdown("#### 📑 Simulação do Demonstrativo (Bloco 2)")
@@ -610,6 +605,40 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                                  options=programas, key=f"sel_demo_{conta_atual}")
 
         if prog_demo:
+            conta_dados = st.session_state['accounts'][conta_atual]
+            if 'extra_fields' not in conta_dados:
+                conta_dados['extra_fields'] = {}
+            if prog_demo not in conta_dados['extra_fields']:
+                conta_dados['extra_fields'][prog_demo] = {
+                    'rec_prop_cust': 0.0, 'rec_prop_cap': 0.0, 'devol_cust': 0.0, 'devol_cap': 0.0
+                }
+
+            extras = conta_dados['extra_fields'][prog_demo]
+
+            with st.expander("📝 Ajustar Recursos Próprios e Devoluções"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.caption("Recursos Próprios (10)")
+                    n_rpc = st.number_input("Custeio", value=extras.get(
+                        'rec_prop_cust', 0.0), key=f"rpc_{prog_demo}")
+                    n_rpcap = st.number_input("Capital", value=extras.get(
+                        'rec_prop_cap', 0.0), key=f"rpcap_{prog_demo}")
+                with c2:
+                    st.caption("Devolução de Recursos (12)")
+                    n_dc = st.number_input("Custeio ", value=extras.get(
+                        'devol_cust', 0.0), key=f"dc_{prog_demo}")
+                    n_dcap = st.number_input("Capital ", value=extras.get(
+                        'devol_cap', 0.0), key=f"dcap_{prog_demo}")
+
+                if st.button("Salvar Ajustes", key=f"btn_ajuste_{prog_demo}"):
+                    conta_dados['extra_fields'][prog_demo] = {
+                        'rec_prop_cust': n_rpc, 'rec_prop_cap': n_rpcap, 'devol_cust': n_dc, 'devol_cap': n_dcap
+                    }
+                    save_account_to_firebase(
+                        st.session_state['db_conn'], conta_atual, conta_dados)
+                    st.success("Ajustes salvos!")
+                    st.rerun()
+
             s_reprog_cust = get_saldo_anterior(
                 conta_atual, prog_demo, 'Custeio', 1, ano_atual)
             s_reprog_cap = get_saldo_anterior(
@@ -627,16 +656,25 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             desp_cust = sum(m['debito_custeio'] for m in movs_demo)
             desp_cap = sum(m['debito_capital'] for m in movs_demo)
 
-            rec_prop_cust = 0.0
-            rec_prop_cap = 0.0
-            devol_cust = 0.0
-            devol_cap = 0.0
+            rec_prop_cust = extras.get('rec_prop_cust', 0.0)
+            rec_prop_cap = extras.get('rec_prop_cap', 0.0)
+            devol_cust = extras.get('devol_cust', 0.0)
+            devol_cap = extras.get('devol_cap', 0.0)
 
             total_rec_cust = s_reprog_cust + cred_cust + \
                 rec_prop_cust + rend_cust - devol_cust
             total_rec_cap = s_reprog_cap + cred_cap + rec_prop_cap + rend_cap - devol_cap
             saldo_final_cust = total_rec_cust - desp_cust
             saldo_final_cap = total_rec_cap - desp_cap
+
+            if saldo_final_cust < 0 or saldo_final_cap < 0:
+                st.markdown(f"""
+                <div class="warning-box">
+                    ⚠️ <b>Atenção: Entradas menores que Saídas!</b><br>
+                    Verifique se o <b>Saldo Reprogramado</b> (Saldo Inicial) foi lançado corretamente ou se há <b>Recursos Próprios</b> não declarados.<br>
+                    Receita Total Custeio: {format_currency(total_rec_cust)} | Despesa: {format_currency(desp_cust)}
+                </div>
+                """, unsafe_allow_html=True)
 
             df_demo = pd.DataFrame([
                 {"Descrição": "08 - Saldo Reprogramado",
@@ -662,96 +700,196 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 if "13 - VALOR" in row['Descrição'] or "15 - Saldo" in row['Descrição']:
                     return ['background-color: #e0f2f1; color: black; font-weight: bold'] * len(row)
                 return [''] * len(row)
-            st.dataframe(df_demo.style.format({
-                "Custeio": "R$ {:,.2f}", "Capital": "R$ {:,.2f}", "Total": "R$ {:,.2f}"
-            }).apply(highlight_demo_rows, axis=1), use_container_width=True, height=350)
+
+            df_demo_display = apply_currency_format(
+                df_demo.copy(), ["Custeio", "Capital", "Total"])
+            st.dataframe(df_demo_display.style.apply(
+                highlight_demo_rows, axis=1), use_container_width=True, height=350)
 
         with st.expander("Ver Resumo Geral de Todos os Programas"):
             dados_resumo = []
-            col_saldo_ant = f"Saldo {ano_atual-1}"
-            col_credito = f"Crédito {ano_atual}"
-            col_rend = f"Rendimentos {ano_atual}"
-            col_debito = f"Débitos {ano_atual}"
-            col_saldo_final = f"Saldo 31.12.{ano_atual}"
+            conta_dados = st.session_state['accounts'][conta_atual]
+            if 'extra_fields' not in conta_dados:
+                conta_dados['extra_fields'] = {}
 
             for prog in programas:
                 saldo_anterior = get_saldo_anterior(
                     conta_atual, prog, 'Total', 1, ano_atual)
                 movs_ano = [m for m in movs if m['programa']
                             == prog and m.get('ano') == ano_atual]
+
                 credito_ano = sum(m['total_credito'] for m in movs_ano)
                 rendimento_ano = sum(m['total_rendimento'] for m in movs_ano)
                 debito_ano = sum(m['total_debito'] for m in movs_ano)
-                saldo_final = saldo_anterior + credito_ano + rendimento_ano - debito_ano
+
+                extras_p = conta_dados['extra_fields'].get(prog, {})
+                ajuste_entradas = extras_p.get(
+                    'rec_prop_cust', 0) + extras_p.get('rec_prop_cap', 0)
+                ajuste_saidas = extras_p.get(
+                    'devol_cust', 0) + extras_p.get('devol_cap', 0)
+
+                saldo_final = saldo_anterior + credito_ano + rendimento_ano + \
+                    ajuste_entradas - debito_ano - ajuste_saidas
+
                 dados_resumo.append({
-                    "Programas": prog, col_saldo_ant: saldo_anterior, col_credito: credito_ano,
-                    col_rend: rendimento_ano, col_debito: debito_ano, col_saldo_final: saldo_final
+                    "Programas": prog,
+                    f"Saldo {ano_atual-1}": saldo_anterior,
+                    f"Crédito {ano_atual}": credito_ano + ajuste_entradas,
+                    f"Rendimentos {ano_atual}": rendimento_ano,
+                    f"Débitos {ano_atual}": debito_ano + ajuste_saidas,
+                    f"Saldo 31.12.{ano_atual}": saldo_final
                 })
 
             if dados_resumo:
                 df_resumo = pd.DataFrame(dados_resumo)
-                linha_total = {
-                    "Programas": "TOTAL GERAL", col_saldo_ant: df_resumo[col_saldo_ant].sum(),
-                    col_credito: df_resumo[col_credito].sum(), col_rend: df_resumo[col_rend].sum(),
-                    col_debito: df_resumo[col_debito].sum(), col_saldo_final: df_resumo[col_saldo_final].sum()
-                }
+                cols_num = [c for c in df_resumo.columns if c != "Programas"]
+                linha_total = {"Programas": "TOTAL GERAL"}
+                for c in cols_num:
+                    linha_total[c] = df_resumo[c].sum()
+
                 df_resumo = pd.concat(
                     [df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
 
                 def highlight_total_resumo(row):
                     return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Programas'] == 'TOTAL GERAL' else [''] * len(row)
-                st.dataframe(df_resumo.style.format({
-                    col_saldo_ant: "R$ {:,.2f}", col_credito: "R$ {:,.2f}", col_rend: "R$ {:,.2f}",
-                    col_debito: "R$ {:,.2f}", col_saldo_final: "R$ {:,.2f}"
-                }).apply(highlight_total_resumo, axis=1), use_container_width=True)
 
-# === VISUALIZAÇÃO 2: MÓDULO EMPENHOS (GLOBAL) ===
+                df_resumo_display = apply_currency_format(
+                    df_resumo.copy(), cols_num)
+                st.dataframe(df_resumo_display.style.apply(
+                    highlight_total_resumo, axis=1), use_container_width=True)
+
+# === VISUALIZAÇÃO 3: RESUMO CONSOLIDADO ===
+
+
+def render_resumo_consolidado_view():
+    st.subheader("📈 Resumo Geral Consolidado (Todas as Contas)")
+    anos_disp = sorted(st.session_state.get(
+        'available_years', [datetime.now().year]))
+    str_anos = [str(a) for a in anos_disp]
+    ano_selecionado = st.selectbox(
+        "Selecione o Ano:", str_anos, index=len(str_anos)-1)
+    ano_int = int(ano_selecionado)
+
+    total_recebido = 0.0
+    total_gasto = 0.0
+    total_saldo_atual = 0.0
+    lista_detalhada = []
+
+    for nome_conta, dados_conta in st.session_state['accounts'].items():
+        movs = dados_conta.get('movimentacoes', [])
+        progs = dados_conta.get('programas', [])
+        movs_ano = [m for m in movs if m.get('ano') == ano_int]
+        if 'extra_fields' not in dados_conta:
+            dados_conta['extra_fields'] = {}
+
+        saldo_inicial_conta = 0.0
+        creditos_conta = sum(m['total_credito'] for m in movs_ano)
+        rendimentos_conta = sum(m['total_rendimento'] for m in movs_ano)
+        debitos_conta = sum(m['total_debito'] for m in movs_ano)
+
+        ajuste_entradas_conta = 0.0
+        ajuste_saidas_conta = 0.0
+
+        for p in progs:
+            saldo_inicial_conta += get_saldo_anterior(
+                nome_conta, p, 'Total', 1, ano_int)
+            extras_p = dados_conta['extra_fields'].get(p, {})
+            ajuste_entradas_conta += (extras_p.get('rec_prop_cust',
+                                      0) + extras_p.get('rec_prop_cap', 0))
+            ajuste_saidas_conta += (extras_p.get('devol_cust',
+                                    0) + extras_p.get('devol_cap', 0))
+
+        receita_total_conta = saldo_inicial_conta + \
+            creditos_conta + rendimentos_conta + ajuste_entradas_conta
+        saldo_final_conta = receita_total_conta - debitos_conta - ajuste_saidas_conta
+
+        total_recebido += (saldo_inicial_conta + creditos_conta +
+                           rendimentos_conta + ajuste_entradas_conta)
+        total_gasto += (debitos_conta + ajuste_saidas_conta)
+        total_saldo_atual += saldo_final_conta
+
+        lista_detalhada.append({
+            "Conta": nome_conta,
+            "Saldo Anterior": saldo_inicial_conta,
+            "Créditos (+RP)": creditos_conta + ajuste_entradas_conta,
+            "Rendimentos": rendimentos_conta,
+            "Débitos (+Dev)": debitos_conta + ajuste_saidas_conta,
+            "Saldo Final": saldo_final_conta
+        })
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Receita (Disp.)", format_currency(
+        total_recebido), delta_color="normal")
+    col2.metric("Total Saídas (Débitos)", format_currency(
+        total_gasto), delta_color="inverse")
+    col3.metric("Saldo Geral Acumulado", format_currency(total_saldo_atual))
+    st.divider()
+
+    st.markdown(f"#### Detalhamento por Conta - {ano_int}")
+    if lista_detalhada:
+        df_resumo = pd.DataFrame(lista_detalhada)
+        linha_total = {
+            "Conta": "TOTAL GERAL",
+            "Saldo Anterior": df_resumo["Saldo Anterior"].sum(),
+            "Créditos (+RP)": df_resumo["Créditos (+RP)"].sum(),
+            "Rendimentos": df_resumo["Rendimentos"].sum(),
+            "Débitos (+Dev)": df_resumo["Débitos (+Dev)"].sum(),
+            "Saldo Final": df_resumo["Saldo Final"].sum()
+        }
+        df_resumo = pd.concat(
+            [df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
+
+        def highlight_total(row):
+            return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Conta'] == 'TOTAL GERAL' else [''] * len(row)
+
+        cols_to_fmt = [
+            "Saldo Anterior", "Créditos (+RP)", "Rendimentos", "Débitos (+Dev)", "Saldo Final"]
+        df_resumo_display = apply_currency_format(
+            df_resumo.copy(), cols_to_fmt)
+
+        st.dataframe(df_resumo_display.style.apply(
+            highlight_total, axis=1), use_container_width=True, height=400)
+    else:
+        st.info("Nenhuma conta encontrada.")
 
 
 def render_empenhos_global_view():
     st.subheader("📜 Controle de Empenhos e Ordens de Pagamento (Global)")
 
-    # Inicializa estado da tela se não existir
+    with st.expander("⚙️ Cadastrar/Gerenciar Programas"):
+        c_p1, c_p2 = st.columns([3, 1])
+        novo_prog_global = c_p1.text_input(
+            "Novo Programa", key="new_prog_global")
+        if c_p2.button("Cadastrar", key="btn_add_prog_global"):
+            if novo_prog_global and novo_prog_global not in st.session_state['global_programs']:
+                st.session_state['global_programs'].append(novo_prog_global)
+                save_global_programs_to_firebase(
+                    st.session_state['db_conn'], st.session_state['global_programs'])
+                st.success("Programa cadastrado!")
+                st.rerun()
+            elif novo_prog_global:
+                st.warning("Programa já existe.")
+
+        if st.session_state['global_programs']:
+            st.write("Programas cadastrados: " +
+                     ", ".join(st.session_state['global_programs']))
+        else:
+            st.info("Nenhum programa cadastrado para empenhos.")
+
     if 'empenho_mode' not in st.session_state:
-        st.session_state['empenho_mode'] = 'list'  # 'list' ou 'form'
+        st.session_state['empenho_mode'] = 'list'
 
     if 'empenho_em_edicao' not in st.session_state:
         st.session_state['empenho_em_edicao'] = None
 
-    # --- TELA 1: LISTAGEM ---
     if st.session_state['empenho_mode'] == 'list':
-        # 1. Gerenciamento de Programas
-        with st.expander("⚙️ Cadastrar/Gerenciar Programas"):
-            c_p1, c_p2 = st.columns([3, 1])
-            novo_prog_global = c_p1.text_input(
-                "Novo Programa", key="new_prog_global")
-            if c_p2.button("Cadastrar", key="btn_add_prog_global"):
-                if novo_prog_global and novo_prog_global not in st.session_state['global_programs']:
-                    st.session_state['global_programs'].append(
-                        novo_prog_global)
-                    save_global_programs_to_firebase(
-                        st.session_state['db_conn'], st.session_state['global_programs'])
-                    st.success("Programa cadastrado!")
-                    st.rerun()
-                elif novo_prog_global:
-                    st.warning("Programa já existe.")
-
-            if st.session_state['global_programs']:
-                st.write("Programas cadastrados: " +
-                         ", ".join(st.session_state['global_programs']))
-            else:
-                st.info("Nenhum programa cadastrado para empenhos.")
-
-        st.divider()
-
-        # Botão de Novo Registro
         col_new, _ = st.columns([1, 4])
         if col_new.button("➕ Novo Empenho", type="primary"):
             st.session_state['empenho_em_edicao'] = None
             st.session_state['empenho_mode'] = 'form'
             st.rerun()
 
-        # Filtros
+        st.divider()
         anos_disp = sorted(st.session_state.get(
             'available_years', [datetime.now().year]))
         str_anos = [str(a) for a in anos_disp]
@@ -764,7 +902,6 @@ def render_empenhos_global_view():
         filtro_prog_emp = st.selectbox("Filtrar por Programa", [
                                        "Todos"] + lista_programas, key="filt_gemp")
 
-        # Dados
         todos_empenhos = st.session_state['empenhos_global']
         empenhos_ano = []
         for emp in todos_empenhos:
@@ -774,8 +911,6 @@ def render_empenhos_global_view():
                     empenhos_ano.append(emp)
             except:
                 pass
-
-        # Ordenação
         empenhos_ano.sort(key=lambda x: x.get(
             'data_empenho', ''), reverse=True)
 
@@ -787,7 +922,6 @@ def render_empenhos_global_view():
         st.markdown(f"**Registros Encontrados: {len(lista_final)}**")
 
         if lista_final:
-            # Cabeçalho Customizado
             c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2, 1, 1.2, 1.2, 1])
             c1.markdown("<div class='row-header'>Data</div>",
                         unsafe_allow_html=True)
@@ -806,13 +940,11 @@ def render_empenhos_global_view():
                 with st.container():
                     col1, col2, col3, col4, col5, col6 = st.columns(
                         [1.2, 2, 1, 1.2, 1.2, 1])
-
                     try:
                         d_show = datetime.strptime(
                             item.get('data_empenho', ''), "%Y-%m-%d").strftime("%d/%m/%Y")
                     except:
                         d_show = "-"
-
                     val_show = format_currency(float(item.get('valor', 0)))
 
                     col1.text(d_show)
@@ -825,26 +957,20 @@ def render_empenhos_global_view():
                         st.session_state['empenho_em_edicao'] = item
                         st.session_state['empenho_mode'] = 'form'
                         st.rerun()
-
                     st.markdown(
                         "<div style='border-bottom: 1px solid #eee; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
 
-            # Totais
             total_val = sum([float(i.get('valor', 0)) for i in lista_final])
             st.metric("Total (Filtro)", format_currency(total_val))
         else:
             st.info("Nenhum registro encontrado com os filtros atuais.")
 
-    # --- TELA 2: FORMULÁRIO (NOVO / EDIÇÃO) ---
     elif st.session_state['empenho_mode'] == 'form':
-        # Botão Voltar no topo
         if st.button("⬅️ Voltar para a Lista", key="btn_back_top"):
             st.session_state['empenho_mode'] = 'list'
             st.rerun()
-
         st.divider()
 
-        # Preparação de Dados
         dados_edicao = st.session_state['empenho_em_edicao']
         is_edit_mode = dados_edicao is not None
 
@@ -854,7 +980,6 @@ def render_empenhos_global_view():
                 file_info = get_file_from_firebase(
                     st.session_state['db_conn'], dados_edicao.get('id'))
 
-        # Helper datas
         def safe_date(date_str):
             if not date_str:
                 return None
@@ -863,7 +988,6 @@ def render_empenhos_global_view():
             except:
                 return None
 
-        # Valores Iniciais
         val_prog = dados_edicao.get('programa') if is_edit_mode else None
         val_num = dados_edicao.get('numero_empenho', "")
         val_data = safe_date(dados_edicao.get(
@@ -884,7 +1008,6 @@ def render_empenhos_global_view():
         prog_index = lista_programas.index(val_prog) if (
             is_edit_mode and val_prog in lista_programas) else 0
 
-        # Formulário Visual
         titulo = "✏️ Editando Empenho" if is_edit_mode else "➕ Novo Empenho"
         st.markdown(f"### {titulo}")
 
@@ -908,53 +1031,36 @@ def render_empenhos_global_view():
             status_opts = ["EXECUTADO", "PENDENTE", "CANCELADO"]
             e_status = ce7.selectbox("Status", status_opts, index=status_opts.index(
                 val_status) if val_status in status_opts else 1, key="form_status")
-
             e_data_nf = None
             if e_status == "EXECUTADO":
                 e_data_nf = ce8.date_input(
                     "Data Nota Fiscal", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
             else:
                 ce8.write("---")
-
             e_obs = ce9.text_input("Observação", value=val_obs, key="form_obs")
             e_itens = st.text_area(
                 "Itens Comprados / Descrição", value=val_itens, height=100, key="form_itens")
 
-            # Arquivos
-            st.markdown("#### 📎 Anexo (PDF)")
-
+            st.markdown("---")
             if is_edit_mode and file_info:
-                st.markdown(f"""
-                    <div class="download-box">
-                        <b>Arquivo atual:</b> {file_info.get('file_name', 'arquivo.pdf')}
-                    </div>
-                """, unsafe_allow_html=True)
-
-                # Download Button Logic
+                st.markdown(
+                    f"<div class='download-box'><b>Arquivo atual:</b> {file_info.get('file_name', 'arquivo.pdf')}</div>", unsafe_allow_html=True)
                 b64_data = file_info.get('file_data')
                 try:
                     bin_data = base64.b64decode(b64_data)
-                    st.download_button(
-                        label="⬇️ Baixar Arquivo Atual",
-                        data=bin_data,
-                        file_name=file_info.get('file_name', 'arquivo.pdf'),
-                        mime='application/pdf'
-                    )
+                    st.download_button(label="⬇️ Baixar Arquivo Atual", data=bin_data, file_name=file_info.get(
+                        'file_name', 'arquivo.pdf'), mime='application/pdf')
                 except:
                     st.error("Erro ao preparar download.")
-
                 e_file = st.file_uploader("Substituir arquivo (Opcional)", type=[
                                           "pdf"], key="form_file")
             else:
                 e_file = st.file_uploader("Fazer upload de PDF (Máx 2MB)", type=[
                                           "pdf"], key="form_file")
-
             st.markdown("---")
 
-            # Botões de Ação
             c_act1, c_act2, c_act3 = st.columns([1, 1, 4])
 
-            # Helper Salvar
             def run_save():
                 if not e_data:
                     st.error("⚠️ Data do Empenho é obrigatória!")
@@ -977,7 +1083,6 @@ def render_empenhos_global_view():
                 target_id = dados_edicao.get('id') if is_edit_mode else str(
                     datetime.now().timestamp())
 
-                # File Logic
                 if e_file:
                     ok = save_file_to_firebase(
                         st.session_state['db_conn'], target_id, e_file)
@@ -988,7 +1093,6 @@ def render_empenhos_global_view():
                     payload['has_file'] = True
                     payload['file_name'] = dados_edicao.get('file_name')
 
-                # Update State list
                 if is_edit_mode:
                     idx = -1
                     for i, e in enumerate(st.session_state['empenhos_global']):
@@ -1005,140 +1109,29 @@ def render_empenhos_global_view():
                 save_empenhos_to_firebase(
                     st.session_state['db_conn'], st.session_state['empenhos_global'])
                 st.success("Salvo com sucesso!")
-                st.session_state['empenho_mode'] = 'list'  # Voltar para lista
+                st.session_state['empenho_mode'] = 'list'
                 st.rerun()
 
             if c_act1.button("💾 Salvar", type="primary"):
                 run_save()
-
             if c_act2.button("❌ Cancelar"):
                 st.session_state['empenho_mode'] = 'list'
                 st.rerun()
-
             if is_edit_mode:
                 with c_act3:
                     with st.popover("🗑️ Excluir"):
                         st.write("Tem certeza?")
                         if st.button("Sim, excluir permanentemente"):
                             t_id = dados_edicao.get('id')
-                            idx = -1
-                            for i, e in enumerate(st.session_state['empenhos_global']):
-                                if e.get('id') == t_id:
-                                    idx = i
-                                    break
-                            if idx != -1:
-                                st.session_state['empenhos_global'].pop(idx)
-                                delete_file_from_firebase(
-                                    st.session_state['db_conn'], t_id)
-                                save_empenhos_to_firebase(
-                                    st.session_state['db_conn'], st.session_state['empenhos_global'])
-                                st.session_state['empenho_mode'] = 'list'
-                                st.rerun()
-
-# === VISUALIZAÇÃO 3: RESUMO CONSOLIDADO (NOVO) ===
-
-
-def render_resumo_consolidado_view():
-    st.subheader("📈 Resumo Geral Consolidado (Todas as Contas)")
-
-    anos_disp = sorted(st.session_state.get(
-        'available_years', [datetime.now().year]))
-    str_anos = [str(a) for a in anos_disp]
-
-    # Filtro de Ano
-    col_filtro, _ = st.columns([1, 3])
-    ano_selecionado = col_filtro.selectbox(
-        "Selecione o Ano:", str_anos, index=len(str_anos)-1)
-    ano_int = int(ano_selecionado)
-
-    # 1. Calcular Totais
-    total_recebido = 0.0
-    total_gasto = 0.0
-    total_saldo_atual = 0.0
-
-    # Lista para a Tabela Detalhada
-    lista_detalhada = []
-
-    # Itera sobre todas as contas
-    for nome_conta, dados_conta in st.session_state['accounts'].items():
-        movs = dados_conta.get('movimentacoes', [])
-        progs = dados_conta.get('programas', [])
-
-        # Filtra movimentos do ano
-        movs_ano = [m for m in movs if m.get('ano') == ano_int]
-
-        # Calcula Totais da Conta
-        saldo_inicial_conta = 0.0
-        creditos_conta = sum(m['total_credito'] for m in movs_ano)
-        rendimentos_conta = sum(m['total_rendimento'] for m in movs_ano)
-        debitos_conta = sum(m['total_debito'] for m in movs_ano)
-
-        # Para saldo inicial, somamos o saldo de todos os programas
-        for p in progs:
-            saldo_inicial_conta += get_saldo_anterior(
-                nome_conta, p, 'Total', 1, ano_int)
-
-        receita_total_conta = saldo_inicial_conta + creditos_conta + rendimentos_conta
-        saldo_final_conta = receita_total_conta - debitos_conta
-
-        # Acumula nos totais gerais
-        # Entradas puras no ano
-        total_recebido += (creditos_conta + rendimentos_conta)
-        total_gasto += debitos_conta
-        total_saldo_atual += saldo_final_conta
-
-        lista_detalhada.append({
-            "Conta": nome_conta,
-            "Saldo Anterior": saldo_inicial_conta,
-            "Créditos": creditos_conta,
-            "Rendimentos": rendimentos_conta,
-            "Débitos": debitos_conta,
-            "Saldo Final": saldo_final_conta
-        })
-
-    # 2. Exibir Cartões de Métricas
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Entradas (Créd + Rend)",
-                format_currency(total_recebido), delta_color="normal")
-    col2.metric("Total Saídas (Débitos)", format_currency(
-        total_gasto), delta_color="inverse")  # Vermelho se subir
-    col3.metric("Saldo Geral Acumulado", format_currency(total_saldo_atual))
-
-    st.divider()
-
-    # 3. Tabela Detalhada por Conta
-    st.markdown(f"#### Detalhamento por Conta - {ano_int}")
-    if lista_detalhada:
-        df_resumo = pd.DataFrame(lista_detalhada)
-
-        # Adiciona Linha de Total
-        linha_total = {
-            "Conta": "TOTAL GERAL",
-            "Saldo Anterior": df_resumo["Saldo Anterior"].sum(),
-            "Créditos": df_resumo["Créditos"].sum(),
-            "Rendimentos": df_resumo["Rendimentos"].sum(),
-            "Débitos": df_resumo["Débitos"].sum(),
-            "Saldo Final": df_resumo["Saldo Final"].sum()
-        }
-        df_resumo = pd.concat(
-            [df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
-
-        def highlight_total(row):
-            return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Conta'] == 'TOTAL GERAL' else [''] * len(row)
-
-        st.dataframe(
-            df_resumo.style.format({
-                "Saldo Anterior": "R$ {:,.2f}",
-                "Créditos": "R$ {:,.2f}",
-                "Rendimentos": "R$ {:,.2f}",
-                "Débitos": "R$ {:,.2f}",
-                "Saldo Final": "R$ {:,.2f}"
-            }).apply(highlight_total, axis=1),
-            use_container_width=True,
-            height=400
-        )
-    else:
-        st.info("Nenhuma conta encontrada.")
+                            st.session_state['empenhos_global'] = [
+                                e for e in st.session_state['empenhos_global'] if e.get('id') != t_id]
+                            delete_file_from_firebase(
+                                st.session_state['db_conn'], t_id)
+                            save_empenhos_to_firebase(
+                                st.session_state['db_conn'], st.session_state['empenhos_global'])
+                            st.success("Registro excluído!")
+                            st.session_state['empenho_mode'] = 'list'
+                            st.rerun()
 
 
 def main():
@@ -1170,7 +1163,6 @@ def main():
                     save_account_to_firebase(
                         st.session_state['db_conn'], nome, st.session_state['accounts'][nome])
                     st.rerun()
-
             st.divider()
             st.markdown("**Programas Ativos:**")
             progs = st.session_state['accounts'][nome].get('programas', [])
