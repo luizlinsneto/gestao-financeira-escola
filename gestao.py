@@ -40,14 +40,12 @@ st.markdown("""
 def init_firebase():
     if not firebase_admin._apps:
         cred = None
-        # 1. TENTATIVA LOCAL
         if os.path.exists("firebase_key.json"):
             try:
                 cred = credentials.Certificate("firebase_key.json")
             except Exception as e:
                 st.error(f"Erro no arquivo json: {e}")
                 return None
-        # 2. TENTATIVA NUVEM
         else:
             try:
                 if hasattr(st, "secrets") and "firebase" in st.secrets:
@@ -236,13 +234,11 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
     saldo = 0.0
     saldos_iniciais = conta_data.get('saldos_iniciais', {})
     
-    # Soma Saldo Inicial Manual
     if programa in saldos_iniciais:
         val = saldos_iniciais[programa].get(tipo_recurso, 0.0) if tipo_recurso != 'Total' else \
               saldos_iniciais[programa].get('Capital', 0.0) + saldos_iniciais[programa].get('Custeio', 0.0)
         saldo += val
 
-    # Soma Movimentações Anteriores
     for mov in movs:
         try:
             mov_ano = int(mov.get('ano', datetime.now().year))
@@ -503,14 +499,25 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             conta_dados = st.session_state['accounts'][conta_atual]
             if 'extra_fields' not in conta_dados:
                 conta_dados['extra_fields'] = {}
-            if prog_demo not in conta_dados['extra_fields']:
-                conta_dados['extra_fields'][prog_demo] = {}
             
-            extras = conta_dados['extra_fields'][prog_demo]
+            # --- CORREÇÃO AQUI: CHAVE COM ANO PARA EVITAR DADOS CRUZADOS ---
+            # Cria a chave composta (Programa + Ano) para buscar os dados específicos
+            chave_extras = f"{prog_demo}_{ano_atual}"
+            
+            # Garante que existe no dicionário, senão cria vazio
+            if chave_extras not in conta_dados['extra_fields']:
+                conta_dados['extra_fields'][chave_extras] = {
+                    'saldo_reprog_cust': 0.0, 'saldo_reprog_cap': 0.0,
+                    'rec_prop_cust': 0.0, 'rec_prop_cap': 0.0, 
+                    'devol_cust': 0.0, 'devol_cap': 0.0
+                }
+            
+            extras = conta_dados['extra_fields'][chave_extras]
 
             with st.expander("📝 Ajustar Saldos Iniciais, Recursos Próprios e Devoluções", expanded=True):
                 st.markdown("##### 1. Saldo Reprogramado do Exercício Anterior (08)")
                 c_s1, c_s2 = st.columns(2)
+                # Valores manuais (Default 0.0 se não existir)
                 n_src = c_s1.number_input("Saldo Reprog. Custeio", value=extras.get('saldo_reprog_cust', 0.0), key=f"src_{prog_demo}_{ano_atual}")
                 n_srcap = c_s2.number_input("Saldo Reprog. Capital", value=extras.get('saldo_reprog_cap', 0.0), key=f"srcap_{prog_demo}_{ano_atual}")
 
@@ -526,8 +533,8 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                     n_dcap = st.number_input("Capital ", value=extras.get('devol_cap', 0.0), key=f"dcap_{prog_demo}_{ano_atual}")
                 
                 if st.button("Salvar Ajustes do Demonstrativo", key=f"btn_ajuste_{prog_demo}_{ano_atual}"):
-                    if 'extra_fields' not in conta_dados: conta_dados['extra_fields'] = {}
-                    conta_dados['extra_fields'][prog_demo] = {
+                    # Salva usando a chave composta (Programa + Ano)
+                    conta_dados['extra_fields'][chave_extras] = {
                         'saldo_reprog_cust': n_src, 'saldo_reprog_cap': n_srcap,
                         'rec_prop_cust': n_rpc, 'rec_prop_cap': n_rpcap, 
                         'devol_cust': n_dc, 'devol_cap': n_dcap
@@ -536,6 +543,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                     st.success("Ajustes salvos!")
                     st.rerun()
 
+            # USAR VALORES MANUAIS EM VEZ DE CALCULAR AUTOMATICAMENTE
             s_reprog_cust = extras.get('saldo_reprog_cust', 0.0)
             s_reprog_cap = extras.get('saldo_reprog_cap', 0.0)
             
@@ -579,6 +587,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 {"Descrição": "15 - Saldo a Reprogramar", "Custeio": saldo_final_cust, "Capital": saldo_final_cap},
             ])
             df_demo["Total"] = df_demo["Custeio"] + df_demo["Capital"]
+            
             def highlight_demo_rows(row):
                 if "13 - VALOR" in row['Descrição'] or "15 - Saldo" in row['Descrição']:
                     return ['background-color: #e0f2f1; color: black; font-weight: bold'] * len(row)
@@ -601,7 +610,10 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 rendimento_ano = sum(m['total_rendimento'] for m in movs_ano)
                 debito_ano = sum(m['total_debito'] for m in movs_ano)
                 
-                extras_p = conta_dados['extra_fields'].get(prog, {})
+                # --- CORREÇÃO AQUI TAMBÉM: Usar a chave composta (Programa + Ano)
+                chave_extras = f"{prog}_{ano_atual}"
+                extras_p = conta_dados['extra_fields'].get(chave_extras, {})
+                
                 ajuste_entradas = extras_p.get('rec_prop_cust', 0) + extras_p.get('rec_prop_cap', 0)
                 ajuste_saidas = extras_p.get('devol_cust', 0) + extras_p.get('devol_cap', 0)
                 
@@ -660,13 +672,18 @@ def render_resumo_consolidado_view():
 
         for p in progs:
             saldo_inicial_conta += get_saldo_anterior(nome_conta, p, 'Total', 1, ano_int)
-            extras_p = dados_conta['extra_fields'].get(p, {})
+            
+            # --- CORREÇÃO AQUI TAMBÉM: Usar a chave composta (Programa + Ano)
+            chave_extras = f"{p}_{ano_int}"
+            extras_p = dados_conta['extra_fields'].get(chave_extras, {})
+            
             ajuste_entradas_conta += (extras_p.get('rec_prop_cust', 0) + extras_p.get('rec_prop_cap', 0))
             ajuste_saidas_conta += (extras_p.get('devol_cust', 0) + extras_p.get('devol_cap', 0))
         
         receita_total_conta = saldo_inicial_conta + creditos_conta + rendimentos_conta + ajuste_entradas_conta
         saldo_final_conta = receita_total_conta - debitos_conta - ajuste_saidas_conta
         
+        # FIX: Including saldo_inicial_conta in total_recebido to reflect 'Available Revenue'
         total_recebido += (saldo_inicial_conta + creditos_conta + rendimentos_conta + ajuste_entradas_conta)
         total_gasto += (debitos_conta + ajuste_saidas_conta)
         total_saldo_atual += saldo_final_conta
@@ -698,6 +715,7 @@ def render_resumo_consolidado_view():
             "Saldo Final": df_resumo["Saldo Final"].sum()
         }
         df_resumo = pd.concat([df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
+        
         def highlight_total(row):
             return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Conta'] == 'TOTAL GERAL' else [''] * len(row)
         
