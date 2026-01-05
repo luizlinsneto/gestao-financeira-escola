@@ -742,7 +742,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         st.markdown("### 📊 Resumo Geral e Demonstrativo da Conta")
         st.divider()
         st.markdown("#### 📑 Simulação do Demonstrativo (Bloco 2)")
-        # FIX DUPLICATE KEY: Usando ano_atual para diferenciar
+        # FIX: ADDED ano_atual to key to prevent duplicates
         prog_demo = st.selectbox(
             "Selecione o Programa para Detalhar:",
             options=programas,
@@ -916,6 +916,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
 
         with st.expander("Ver Resumo Geral de Todos os Programas"):
             dados_resumo = []
+
             conta_dados = st.session_state["accounts"][conta_atual]
             if "extra_fields" not in conta_dados:
                 conta_dados["extra_fields"] = {}
@@ -1007,6 +1008,7 @@ def render_resumo_consolidado_view():
         movs = dados_conta.get("movimentacoes", [])
         progs = dados_conta.get("programas", [])
         movs_ano = [m for m in movs if m.get("ano") == ano_int]
+
         if "extra_fields" not in dados_conta:
             dados_conta["extra_fields"] = {}
 
