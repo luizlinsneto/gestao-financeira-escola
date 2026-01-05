@@ -44,14 +44,12 @@ st.markdown(
 def init_firebase():
     if not firebase_admin._apps:
         cred = None
-        # 1. TENTATIVA LOCAL
         if os.path.exists("firebase_key.json"):
             try:
                 cred = credentials.Certificate("firebase_key.json")
             except Exception as e:
                 st.error(f"Erro no arquivo json: {e}")
                 return None
-        # 2. TENTATIVA NUVEM
         else:
             try:
                 if hasattr(st, "secrets") and "firebase" in st.secrets:
@@ -744,7 +742,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         st.markdown("### 📊 Resumo Geral e Demonstrativo da Conta")
         st.divider()
         st.markdown("#### 📑 Simulação do Demonstrativo (Bloco 2)")
-        # FIX: Key includes ano_atual to prevent duplicate key errors
         prog_demo = st.selectbox(
             "Selecione o Programa para Detalhar:",
             options=programas,
@@ -1449,6 +1446,107 @@ def render_empenhos_global_view():
                             st.success("Registro excluído!")
                             st.session_state["empenho_mode"] = "list"
                             st.rerun()
+
+
+def main():
+    init_session_state()
+    modulo_selecionado, conta_selecionada = sidebar_config()
+    st.title(f"📊 {modulo_selecionado}")
+
+    if modulo_selecionado == "🏦 Movimentação Financeira":
+        if not conta_selecionada:
+            st.info(
+                "👈 Cadastre uma conta na barra lateral para começar a usar o financeiro."
+            )
+            return
+
+        nome = conta_selecionada
+        st.header(f"Conta: {nome}")
+
+        with st.expander("⚙️ Gerenciar Programas da Conta"):
+            c1, c2 = st.columns([3, 1])
+            novo = c1.text_input("Novo Programa", key=f"np_{nome}")
+            if c2.button("Adicionar", key=f"b_{nome}"):
+                if novo and novo not in st.session_state["accounts"][nome]["programas"]:
+                    st.session_state["accounts"][nome]["programas"].append(novo)
+                    if "saldos_iniciais" not in st.session_state["accounts"][nome]:
+                        st.session_state["accounts"][nome]["saldos_iniciais"] = {}
+                    st.session_state["accounts"][nome]["saldos_iniciais"][novo] = {
+                        "Capital": 0.0,
+                        "Custeio": 0.0,
+                    }
+                    save_account_to_firebase(
+                        st.session_state["db_conn"],
+                        nome,
+                        st.session_state["accounts"][nome],
+                    )
+                    st.rerun()
+            st.divider()
+            st.markdown("**Programas Ativos:**")
+            progs = st.session_state["accounts"][nome].get("programas", [])
+            if progs:
+                for p in progs:
+                    col_p1, col_p2 = st.columns([4, 1])
+                    col_p1.text(f"📌 {p}")
+                    if col_p2.button(
+                        "🗑️", key=f"del_prog_{nome}_{p}", help=f"Excluir programa {p}"
+                    ):
+                        st.session_state["accounts"][nome]["programas"].remove(p)
+                        if "saldos_iniciais" in st.session_state["accounts"][nome]:
+                            st.session_state["accounts"][nome]["saldos_iniciais"].pop(
+                                p, None
+                            )
+                        save_account_to_firebase(
+                            st.session_state["db_conn"],
+                            nome,
+                            st.session_state["accounts"][nome],
+                        )
+                        st.success(f"Programa '{p}' removido!")
+                        st.rerun()
+                st.write("---")
+                st.write("Saldos Iniciais (Abertura de Conta):")
+                for p in progs:
+                    si = (
+                        st.session_state["accounts"][nome]
+                        .setdefault("saldos_iniciais", {})
+                        .setdefault(p, {"Capital": 0.0, "Custeio": 0.0})
+                    )
+                    k = f"{nome}_{p}"
+                    cols = st.columns([2, 1, 1, 1])
+                    cols[0].write(f"📂 {p}")
+                    n_cap = cols[1].number_input(
+                        "Saldo Inicial Capital", value=si["Capital"], key=f"sic_{k}"
+                    )
+                    n_cus = cols[2].number_input(
+                        "Saldo Inicial Custeio", value=si["Custeio"], key=f"sis_{k}"
+                    )
+                    if cols[3].button("Salvar", key=f"bts_{k}"):
+                        si["Capital"] = n_cap
+                        si["Custeio"] = n_cus
+                        save_account_to_firebase(
+                            st.session_state["db_conn"],
+                            nome,
+                            st.session_state["accounts"][nome],
+                        )
+                        st.rerun()
+
+        if st.session_state["accounts"][nome]["programas"]:
+            anos = sorted(
+                st.session_state.get("available_years", [datetime.now().year])
+            )
+            for aba_ano, ano in zip(st.tabs([str(a) for a in anos]), anos):
+                with aba_ano:
+                    render_financeiro_view(
+                        nome, ano, st.session_state["accounts"][nome]["programas"]
+                    )
+        else:
+            st.warning("Cadastre programas acima para começar.")
+
+    elif modulo_selecionado == "📜 Controle de Empenhos":
+        render_empenhos_global_view()
+
+    elif modulo_selecionado == "📈 Resumo Consolidado":
+        render_resumo_consolidado_view()
 
 
 if __name__ == "__main__":
