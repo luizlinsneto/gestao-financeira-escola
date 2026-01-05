@@ -742,7 +742,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         st.markdown("### 📊 Resumo Geral e Demonstrativo da Conta")
         st.divider()
         st.markdown("#### 📑 Simulação do Demonstrativo (Bloco 2)")
-        # FIX: ADDED ano_atual to key to prevent duplicates
+        # FIX DUPLICATE KEY: Usando ano_atual para diferenciar
         prog_demo = st.selectbox(
             "Selecione o Programa para Detalhar:",
             options=programas,
@@ -995,7 +995,7 @@ def render_resumo_consolidado_view():
     anos_disp = sorted(st.session_state.get("available_years", [datetime.now().year]))
     str_anos = [str(a) for a in anos_disp]
     ano_selecionado = st.selectbox(
-        "Selecione o Ano:", str_anos, index=len(str_anos) - 1
+        "Selecione o Ano:", str_anos, index=len(str_anos) - 1, key="sel_ano_consol"
     )
     ano_int = int(ano_selecionado)
 
