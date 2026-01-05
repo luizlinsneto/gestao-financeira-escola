@@ -44,7 +44,7 @@ def init_firebase():
             try:
                 cred = credentials.Certificate("firebase_key.json")
             except Exception as e:
-                st.error(f"Erro no arquivo json: {e}")
+                st.error(f"Erro no arquivo json local: {e}")
                 return None
         else:
             try:
@@ -228,17 +228,25 @@ def init_session_state():
                 pass
         st.session_state['available_years'] = sorted(list(anos_encontrados))
 
+# --- CÁLCULO DE SALDO COM BASE NO ANO ---
 def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo):
     conta_data = st.session_state['accounts'][account_name]
     movs = conta_data.get('movimentacoes', []) 
     saldo = 0.0
-    saldos_iniciais = conta_data.get('saldos_iniciais', {})
     
-    if programa in saldos_iniciais:
-        val = saldos_iniciais[programa].get(tipo_recurso, 0.0) if tipo_recurso != 'Total' else \
-              saldos_iniciais[programa].get('Capital', 0.0) + saldos_iniciais[programa].get('Custeio', 0.0)
-        saldo += val
+    # 1. Recupera o Saldo MANUAL específico do ANO selecionado
+    saldos_anuais = conta_data.get('saldos_anuais', {})
+    dados_ano_atual = saldos_anuais.get(str(ano_alvo), {})
+    dados_prog_ano = dados_ano_atual.get(programa, {})
+    
+    if tipo_recurso == 'Capital':
+        saldo += dados_prog_ano.get('Capital', 0.0)
+    elif tipo_recurso == 'Custeio':
+        saldo += dados_prog_ano.get('Custeio', 0.0)
+    elif tipo_recurso == 'Total':
+        saldo += (dados_prog_ano.get('Capital', 0.0) + dados_prog_ano.get('Custeio', 0.0))
 
+    # 2. Soma movimentações ocorridas DENTRO do ano selecionado, até o mês anterior
     for mov in movs:
         try:
             mov_ano = int(mov.get('ano', datetime.now().year))
@@ -246,9 +254,11 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
             mov_ano = datetime.now().year
             
         mov_mes = mov['mes_num']
-        eh_passado = (mov_ano < int(ano_alvo)) or (mov_ano == int(ano_alvo) and mov_mes < int(mes_alvo))
         
-        if mov['programa'] == programa and eh_passado:
+        eh_ano_correto = (mov_ano == int(ano_alvo))
+        eh_mes_anterior = (mov_mes < int(mes_alvo))
+        
+        if mov['programa'] == programa and eh_ano_correto and eh_mes_anterior:
             if tipo_recurso == 'Capital':
                 saldo += (mov['credito_capital'] + mov['rendimento_capital'] - mov['debito_capital'])
             elif tipo_recurso == 'Custeio':
@@ -297,7 +307,12 @@ def sidebar_config():
                 nova_conta = st.text_input("Nome da Nova Conta", placeholder="Ex: 27.922-6")
                 if st.button("Adicionar Conta"):
                     if nova_conta and nova_conta not in st.session_state['accounts']:
-                        nova_estrutura = {'programas': [], 'movimentacoes': [], 'saldos_iniciais': {}}
+                        nova_estrutura = {
+                            'programas': [], 
+                            'movimentacoes': [], 
+                            'saldos_iniciais': {}, 
+                            'saldos_anuais': {} 
+                        }
                         st.session_state['accounts'][nova_conta] = nova_estrutura
                         save_account_to_firebase(st.session_state['db_conn'], nova_conta, nova_estrutura)
                         st.success(f"Conta {nova_conta} criada!")
@@ -404,12 +419,13 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             v_dc = float(prog_data['debito_capital']) if prog_data else 0.0
             v_dec = float(prog_data['debito_custeio']) if prog_data else 0.0
 
+            # Saldo considera o ANO selecionado
             saldo_disp_cap = get_saldo_anterior(conta_atual, prog, 'Capital', mes_selecionado, ano_atual)
             saldo_disp_cust = get_saldo_anterior(conta_atual, prog, 'Custeio', mes_selecionado, ano_atual)
 
             with st.expander(f"Movimento: {prog}", expanded=True):
                 c1, c2, c3, c4 = st.columns(4)
-                st.markdown(f"**Saldo Ant.:** Cap: {format_currency(saldo_disp_cap)} | Cust: {format_currency(saldo_disp_cust)}")
+                st.markdown(f"**Saldo Ant. ({ano_atual}):** Cap: {format_currency(saldo_disp_cap)} | Cust: {format_currency(saldo_disp_cust)}")
                 k_suf = f"{conta_atual}_{prog}_{ano_atual}_{mes_selecionado}"
                 cred_cap = c1.number_input(f"Créd. Capital", min_value=0.0, value=v_cc, key=f"cc_{k_suf}")
                 cred_cus = c2.number_input(f"Créd. Custeio", min_value=0.0, value=v_crc, key=f"crc_{k_suf}")
@@ -496,57 +512,19 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         prog_demo = st.selectbox("Selecione o Programa para Detalhar:", options=programas, key=f"sel_demo_{conta_atual}_{ano_atual}")
         
         if prog_demo:
-            conta_dados = st.session_state['accounts'][conta_atual]
-            if 'extra_fields' not in conta_dados:
-                conta_dados['extra_fields'] = {}
+            # --- MODIFICAÇÃO: Bloco "Ajustar Saldos" removido a pedido do usuário ---
+            # Agora, o Saldo Reprogramado é pego diretamente da configuração de Saldo Anterior do ano (Mês 1)
             
-            # --- CORREÇÃO AQUI: CHAVE COM ANO PARA EVITAR DADOS CRUZADOS ---
-            # Cria a chave composta (Programa + Ano) para buscar os dados específicos
-            chave_extras = f"{prog_demo}_{ano_atual}"
+            # Pega o saldo de abertura do ano (Mês 1) que inclui o valor manual configurado na barra lateral
+            s_reprog_cap = get_saldo_anterior(conta_atual, prog_demo, 'Capital', 1, ano_atual)
+            s_reprog_cust = get_saldo_anterior(conta_atual, prog_demo, 'Custeio', 1, ano_atual)
             
-            # Garante que existe no dicionário, senão cria vazio
-            if chave_extras not in conta_dados['extra_fields']:
-                conta_dados['extra_fields'][chave_extras] = {
-                    'saldo_reprog_cust': 0.0, 'saldo_reprog_cap': 0.0,
-                    'rec_prop_cust': 0.0, 'rec_prop_cap': 0.0, 
-                    'devol_cust': 0.0, 'devol_cap': 0.0
-                }
-            
-            extras = conta_dados['extra_fields'][chave_extras]
+            # Como a entrada manual foi removida, esses valores são zerados por padrão
+            rec_prop_cust = 0.0
+            rec_prop_cap = 0.0
+            devol_cust = 0.0
+            devol_cap = 0.0
 
-            with st.expander("📝 Ajustar Saldos Iniciais, Recursos Próprios e Devoluções", expanded=True):
-                st.markdown("##### 1. Saldo Reprogramado do Exercício Anterior (08)")
-                c_s1, c_s2 = st.columns(2)
-                # Valores manuais (Default 0.0 se não existir)
-                n_src = c_s1.number_input("Saldo Reprog. Custeio", value=extras.get('saldo_reprog_cust', 0.0), key=f"src_{prog_demo}_{ano_atual}")
-                n_srcap = c_s2.number_input("Saldo Reprog. Capital", value=extras.get('saldo_reprog_cap', 0.0), key=f"srcap_{prog_demo}_{ano_atual}")
-
-                st.markdown("##### 2. Outros Ajustes")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.caption("Recursos Próprios (10)")
-                    n_rpc = st.number_input("Custeio", value=extras.get('rec_prop_cust', 0.0), key=f"rpc_{prog_demo}_{ano_atual}")
-                    n_rpcap = st.number_input("Capital", value=extras.get('rec_prop_cap', 0.0), key=f"rpcap_{prog_demo}_{ano_atual}")
-                with c2:
-                    st.caption("Devolução de Recursos (12)")
-                    n_dc = st.number_input("Custeio ", value=extras.get('devol_cust', 0.0), key=f"dc_{prog_demo}_{ano_atual}")
-                    n_dcap = st.number_input("Capital ", value=extras.get('devol_cap', 0.0), key=f"dcap_{prog_demo}_{ano_atual}")
-                
-                if st.button("Salvar Ajustes do Demonstrativo", key=f"btn_ajuste_{prog_demo}_{ano_atual}"):
-                    # Salva usando a chave composta (Programa + Ano)
-                    conta_dados['extra_fields'][chave_extras] = {
-                        'saldo_reprog_cust': n_src, 'saldo_reprog_cap': n_srcap,
-                        'rec_prop_cust': n_rpc, 'rec_prop_cap': n_rpcap, 
-                        'devol_cust': n_dc, 'devol_cap': n_dcap
-                    }
-                    save_account_to_firebase(st.session_state['db_conn'], conta_atual, conta_dados)
-                    st.success("Ajustes salvos!")
-                    st.rerun()
-
-            # USAR VALORES MANUAIS EM VEZ DE CALCULAR AUTOMATICAMENTE
-            s_reprog_cust = extras.get('saldo_reprog_cust', 0.0)
-            s_reprog_cap = extras.get('saldo_reprog_cap', 0.0)
-            
             movs = st.session_state['accounts'][conta_atual].get('movimentacoes', [])
             movs_demo = [m for m in movs if m['programa'] == prog_demo and m.get('ano') == ano_atual]
             
@@ -556,11 +534,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             rend_cap = sum(m['rendimento_capital'] for m in movs_demo)
             desp_cust = sum(m['debito_custeio'] for m in movs_demo)
             desp_cap = sum(m['debito_capital'] for m in movs_demo)
-            
-            rec_prop_cust = extras.get('rec_prop_cust', 0.0)
-            rec_prop_cap = extras.get('rec_prop_cap', 0.0)
-            devol_cust = extras.get('devol_cust', 0.0)
-            devol_cap = extras.get('devol_cap', 0.0)
 
             total_rec_cust = s_reprog_cust + cred_cust + rec_prop_cust + rend_cust - devol_cust
             total_rec_cap = s_reprog_cap + cred_cap + rec_prop_cap + rend_cap - devol_cap
@@ -571,7 +544,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 st.markdown(f"""
                 <div class="warning-box">
                     ⚠️ <b>Atenção: Entradas menores que Saídas!</b><br>
-                    Verifique o <b>Saldo Reprogramado Manual</b> ou se há <b>Recursos Próprios</b> não declarados.<br>
+                    Verifique se o <b>Saldo Anterior</b> foi configurado corretamente em 'Gerenciar Programas'.<br>
                     Receita Total Custeio: {format_currency(total_rec_cust)} | Despesa: {format_currency(desp_cust)}
                 </div>
                 """, unsafe_allow_html=True)
@@ -598,7 +571,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         
         with st.expander("Ver Resumo Geral de Todos os Programas"):
             dados_resumo = []
-            
             conta_dados = st.session_state['accounts'][conta_atual]
             if 'extra_fields' not in conta_dados: conta_dados['extra_fields'] = {}
 
@@ -610,7 +582,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 rendimento_ano = sum(m['total_rendimento'] for m in movs_ano)
                 debito_ano = sum(m['total_debito'] for m in movs_ano)
                 
-                # --- CORREÇÃO AQUI TAMBÉM: Usar a chave composta (Programa + Ano)
                 chave_extras = f"{prog}_{ano_atual}"
                 extras_p = conta_dados['extra_fields'].get(chave_extras, {})
                 
@@ -621,7 +592,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 
                 dados_resumo.append({
                     "Programas": prog, 
-                    f"Saldo {ano_atual-1}": saldo_anterior, 
+                    f"Saldo Inicial {ano_atual}": saldo_anterior, 
                     f"Crédito {ano_atual}": credito_ano + ajuste_entradas, 
                     f"Rendimentos {ano_atual}": rendimento_ano, 
                     f"Débitos {ano_atual}": debito_ano + ajuste_saidas,
@@ -635,7 +606,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 for c in cols_num: linha_total[c] = df_resumo[c].sum()
                 
                 df_resumo = pd.concat([df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
-                
                 def highlight_total_resumo(row):
                     return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Programas'] == 'TOTAL GERAL' else [''] * len(row)
                 
@@ -672,18 +642,14 @@ def render_resumo_consolidado_view():
 
         for p in progs:
             saldo_inicial_conta += get_saldo_anterior(nome_conta, p, 'Total', 1, ano_int)
-            
-            # --- CORREÇÃO AQUI TAMBÉM: Usar a chave composta (Programa + Ano)
             chave_extras = f"{p}_{ano_int}"
             extras_p = dados_conta['extra_fields'].get(chave_extras, {})
-            
             ajuste_entradas_conta += (extras_p.get('rec_prop_cust', 0) + extras_p.get('rec_prop_cap', 0))
             ajuste_saidas_conta += (extras_p.get('devol_cust', 0) + extras_p.get('devol_cap', 0))
         
         receita_total_conta = saldo_inicial_conta + creditos_conta + rendimentos_conta + ajuste_entradas_conta
         saldo_final_conta = receita_total_conta - debitos_conta - ajuste_saidas_conta
         
-        # FIX: Including saldo_inicial_conta in total_recebido to reflect 'Available Revenue'
         total_recebido += (saldo_inicial_conta + creditos_conta + rendimentos_conta + ajuste_entradas_conta)
         total_gasto += (debitos_conta + ajuste_saidas_conta)
         total_saldo_atual += saldo_final_conta
@@ -715,7 +681,6 @@ def render_resumo_consolidado_view():
             "Saldo Final": df_resumo["Saldo Final"].sum()
         }
         df_resumo = pd.concat([df_resumo, pd.DataFrame([linha_total])], ignore_index=True)
-        
         def highlight_total(row):
             return ['background-color: #ffd700; color: black; font-weight: bold'] * len(row) if row['Conta'] == 'TOTAL GERAL' else [''] * len(row)
         
@@ -955,6 +920,98 @@ def render_empenhos_global_view():
                             st.success("Registro excluído!")
                             st.session_state['empenho_mode'] = 'list'
                             st.rerun()
+
+def main():
+    init_session_state()
+
+    modulo, conta = sidebar_config()
+
+    st.title("🏫 Gestão Financeira Escolar - PDDE")
+
+    if modulo == "🏦 Movimentação Financeira":
+        if conta:
+            st.header(f"📂 Conta: {conta}")
+            
+            anos = sorted(st.session_state['available_years'])
+            default_ix = len(anos) - 1 if anos else 0
+            if anos:
+                ano_atual = st.selectbox("📅 Exercício (Ano):", anos, index=default_ix)
+            else:
+                ano_atual = datetime.now().year
+                st.info(f"Usando ano atual: {ano_atual} (Crie exercícios na barra lateral)")
+
+            dados_conta = st.session_state['accounts'][conta]
+            programas = dados_conta.get('programas', [])
+
+            with st.expander("⚙️ Gerenciar Programas da Conta"):
+                # Adicionar Novo Programa
+                c1, c2 = st.columns([3, 1])
+                novo_p = c1.text_input("Novo Programa", key=f"novo_p_{conta}")
+                if c2.button("Adicionar", key=f"btn_add_{conta}"):
+                    if novo_p and novo_p not in programas:
+                        programas.append(novo_p)
+                        st.session_state['accounts'][conta]['programas'] = programas
+                        save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
+                        st.rerun()
+                    elif novo_p:
+                        st.warning("Programa já existe.")
+
+                st.divider()
+                st.markdown("#### Programas Ativos:")
+                for p_idx, p_name in enumerate(programas):
+                    cp1, cp2 = st.columns([4, 1])
+                    cp1.markdown(f"📌 **{p_name}**")
+                    if cp2.button("🗑️", key=f"del_prog_{conta}_{p_idx}"):
+                        programas.pop(p_idx)
+                        st.session_state['accounts'][conta]['programas'] = programas
+                        save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
+                        st.rerun()
+                
+                st.divider()
+                st.markdown(f"#### 💰 Saldo Inicial / Anterior para {ano_atual}")
+                st.caption(f"Defina aqui o saldo de abertura especificamente para o ano de {ano_atual}. Isso não afetará outros anos.")
+                
+                # Garante que a estrutura existe
+                if 'saldos_anuais' not in dados_conta:
+                    dados_conta['saldos_anuais'] = {}
+                str_ano = str(ano_atual)
+                if str_ano not in dados_conta['saldos_anuais']:
+                    dados_conta['saldos_anuais'][str_ano] = {}
+                
+                # Inputs para Saldo Anual
+                saldos_mudaram = False
+                for p_name in programas:
+                    # Recupera valores atuais ou 0.0
+                    vals_atuais = dados_conta['saldos_anuais'][str_ano].get(p_name, {'Capital': 0.0, 'Custeio': 0.0})
+                    
+                    st.markdown(f"**📂 {p_name}**")
+                    c_scap, c_scust = st.columns(2)
+                    
+                    novo_cap = c_scap.number_input(f"Saldo Anterior Capital ({ano_atual})", value=float(vals_atuais.get('Capital', 0.0)), key=f"sa_cap_{conta}_{ano_atual}_{p_name}")
+                    novo_cust = c_scust.number_input(f"Saldo Anterior Custeio ({ano_atual})", value=float(vals_atuais.get('Custeio', 0.0)), key=f"sa_cust_{conta}_{ano_atual}_{p_name}")
+                    
+                    if novo_cap != vals_atuais.get('Capital', 0.0) or novo_cust != vals_atuais.get('Custeio', 0.0):
+                        dados_conta['saldos_anuais'][str_ano][p_name] = {'Capital': novo_cap, 'Custeio': novo_cust}
+                        saldos_mudaram = True
+
+                if saldos_mudaram:
+                    if st.button(f"💾 Salvar Saldos de {ano_atual}", key=f"save_saldos_{conta}_{ano_atual}"):
+                        save_account_to_firebase(st.session_state['db_conn'], conta, dados_conta)
+                        st.success(f"Saldos de {ano_atual} atualizados!")
+                        st.rerun()
+
+            if programas:
+                render_financeiro_view(conta, ano_atual, programas)
+            else:
+                st.warning("⚠️ Cadastre pelo menos um programa acima para iniciar os lançamentos.")
+        else:
+            st.info("👈 Selecione uma conta existente ou crie uma nova na barra lateral para começar.")
+
+    elif modulo == "📜 Controle de Empenhos":
+        render_empenhos_global_view()
+
+    elif modulo == "📈 Resumo Consolidado":
+        render_resumo_consolidado_view()
 
 if __name__ == "__main__":
     main()
