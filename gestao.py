@@ -932,4 +932,11 @@ def render_empenhos_global_view():
                         if st.button("Sim, excluir permanentemente"):
                             t_id = dados_edicao.get('id')
                             st.session_state['empenhos_global'] = [e for e in st.session_state['empenhos_global'] if e.get('id') != t_id]
-                            delete_file_from_firebase(st.session_state['db_conn'], t
+                            delete_file_from_firebase(st.session_state['db_conn'], t_id)
+                            save_empenhos_to_firebase(st.session_state['db_conn'], st.session_state['empenhos_global'])
+                            st.success("Registro excluído!")
+                            st.session_state['empenho_mode'] = 'list'
+                            st.rerun()
+
+if __name__ == "__main__":
+    main()
