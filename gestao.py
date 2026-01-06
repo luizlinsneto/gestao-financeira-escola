@@ -32,6 +32,14 @@ st.markdown("""
         color: #991b1b;
         margin-top: 10px;
     }
+    .info-box {
+        padding: 10px;
+        background-color: #e0f2f1;
+        border: 1px solid #b2dfdb;
+        border-radius: 5px;
+        color: #004d40;
+        margin-bottom: 10px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -236,15 +244,21 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
     
     # 1. Recupera o Saldo MANUAL específico do ANO selecionado
     saldos_anuais = conta_data.get('saldos_anuais', {})
-    dados_ano_atual = saldos_anuais.get(str(ano_alvo), {})
+    # Usa string para garantir a chave correta no JSON
+    str_ano = str(ano_alvo)
+    
+    dados_ano_atual = saldos_anuais.get(str_ano, {})
     dados_prog_ano = dados_ano_atual.get(programa, {})
     
+    val_cap = dados_prog_ano.get('Capital', 0.0)
+    val_cust = dados_prog_ano.get('Custeio', 0.0)
+    
     if tipo_recurso == 'Capital':
-        saldo += dados_prog_ano.get('Capital', 0.0)
+        saldo += val_cap
     elif tipo_recurso == 'Custeio':
-        saldo += dados_prog_ano.get('Custeio', 0.0)
+        saldo += val_cust
     elif tipo_recurso == 'Total':
-        saldo += (dados_prog_ano.get('Capital', 0.0) + dados_prog_ano.get('Custeio', 0.0))
+        saldo += (val_cap + val_cust)
 
     # 2. Soma movimentações ocorridas DENTRO do ano selecionado, até o mês anterior
     for mov in movs:
@@ -512,12 +526,18 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         prog_demo = st.selectbox("Selecione o Programa para Detalhar:", options=programas, key=f"sel_demo_{conta_atual}_{ano_atual}")
         
         if prog_demo:
-            # --- MODIFICAÇÃO: Bloco "Ajustar Saldos" removido a pedido do usuário ---
-            # Agora, o Saldo Reprogramado é pego diretamente da configuração de Saldo Anterior do ano (Mês 1)
-            
             # Pega o saldo de abertura do ano (Mês 1) que inclui o valor manual configurado na barra lateral
             s_reprog_cap = get_saldo_anterior(conta_atual, prog_demo, 'Capital', 1, ano_atual)
             s_reprog_cust = get_saldo_anterior(conta_atual, prog_demo, 'Custeio', 1, ano_atual)
+            
+            # Avisa o usuário qual programa está vendo e o saldo encontrado
+            st.markdown(f"""
+            <div class="info-box">
+                Mostrando dados para: <b>{prog_demo}</b><br>
+                Saldo Reprogramado Encontrado: <b>{format_currency(s_reprog_cap + s_reprog_cust)}</b>
+                (Capital: {format_currency(s_reprog_cap)} | Custeio: {format_currency(s_reprog_cust)})
+            </div>
+            """, unsafe_allow_html=True)
             
             # Como a entrada manual foi removida, esses valores são zerados por padrão
             rec_prop_cust = 0.0
