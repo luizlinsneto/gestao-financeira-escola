@@ -814,30 +814,31 @@ def render_empenhos_global_view():
         dados_edicao = st.session_state['empenho_em_edicao']
         is_edit_mode = dados_edicao is not None
         
+        # FIXING THE ERROR: Handling potential None for new entries
+        val_prog = dados_edicao.get('programa') if is_edit_mode else None
+        val_num = dados_edicao.get('numero_empenho', "") if is_edit_mode else ""
+        val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
+        val_ob = dados_edicao.get('ordem_bancaria', "") if is_edit_mode else ""
+        val_data_ob = safe_date(dados_edicao.get('data_ob')) if is_edit_mode else None
+        val_valor = float(dados_edicao.get('valor', 0.0)) if is_edit_mode else 0.0
+        val_data_nf = safe_date(dados_edicao.get('data_nota_fiscal', dados_edicao.get('data_utilizacao', ''))) if is_edit_mode else None
+        val_status = dados_edicao.get('status', "PENDENTE") if is_edit_mode else "PENDENTE"
+        val_obs = dados_edicao.get('observacao', "") if is_edit_mode else ""
+        val_itens = dados_edicao.get('itens', "") if is_edit_mode else ""
+        
         file_info = None
         if is_edit_mode and dados_edicao.get('has_file'):
             with st.spinner("Carregando anexo..."):
                 file_info = get_file_from_firebase(st.session_state['db_conn'], dados_edicao.get('id'))
 
-        def safe_date(date_str):
-            if not date_str: return None
-            try: return datetime.strptime(date_str, "%Y-%m-%d").date()
-            except: return None
-
-        val_prog = dados_edicao.get('programa') if is_edit_mode else None
-        val_num = dados_edicao.get('numero_empenho', "")
-        val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
-        val_ob = dados_edicao.get('ordem_bancaria', "")
-        val_data_ob = safe_date(dados_edicao.get('data_ob')) if is_edit_mode else None
-        val_valor = float(dados_edicao.get('valor', 0.0))
-        val_data_nf = safe_date(dados_edicao.get('data_nota_fiscal', dados_edicao.get('data_utilizacao', ''))) if is_edit_mode else None
-        val_status = dados_edicao.get('status', "PENDENTE")
-        val_obs = dados_edicao.get('observacao', "")
-        val_itens = dados_edicao.get('itens', "")
-
         lista_programas = st.session_state['global_programs']
         if not lista_programas: lista_programas = ["Sem cadastro"]
-        prog_index = lista_programas.index(val_prog) if (is_edit_mode and val_prog in lista_programas) else 0
+        
+        # Handle index safely
+        try:
+            prog_index = lista_programas.index(val_prog) if (is_edit_mode and val_prog in lista_programas) else 0
+        except ValueError:
+            prog_index = 0
 
         titulo = "✏️ Editando Empenho" if is_edit_mode else "➕ Novo Empenho"
         st.markdown(f"### {titulo}")
@@ -855,7 +856,13 @@ def render_empenhos_global_view():
             
             ce7, ce8, ce9 = st.columns(3)
             status_opts = ["EXECUTADO", "PENDENTE", "CANCELADO"]
-            e_status = ce7.selectbox("Status", status_opts, index=status_opts.index(val_status) if val_status in status_opts else 1, key="form_status")
+            # Handle status index safely
+            try:
+                status_idx = status_opts.index(val_status)
+            except ValueError:
+                status_idx = 1 # Default to PENDENTE
+                
+            e_status = ce7.selectbox("Status", status_opts, index=status_idx, key="form_status")
             e_data_nf = None
             if e_status == "EXECUTADO":
                 e_data_nf = ce8.date_input("Data Nota Fiscal", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
