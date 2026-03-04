@@ -186,7 +186,7 @@ def save_global_programs_to_firebase(db, lista_programas):
     except Exception as e:
         st.error(f"Erro ao salvar programas globais: {e}")
 
-# --- AUXILIARES ---
+# --- AUXILIARES (GLOBAIS) ---
 def format_currency(value):
     if value is None: value = 0.0
     s = "{:,.2f}".format(value)
@@ -198,6 +198,12 @@ def apply_currency_format(df, cols):
         if col in df.columns:
             df[col] = df[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     return df
+
+# MOVIDO PARA O ESCOPO GLOBAL PARA EVITAR ERRO NameError
+def safe_date(date_str):
+    if not date_str: return None
+    try: return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except: return None
 
 def init_session_state():
     db = init_firebase()
@@ -244,7 +250,6 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
     
     # 1. Recupera o Saldo MANUAL específico do ANO selecionado
     saldos_anuais = conta_data.get('saldos_anuais', {})
-    # Usa string para garantir a chave correta no JSON
     str_ano = str(ano_alvo)
     
     dados_ano_atual = saldos_anuais.get(str_ano, {})
@@ -539,7 +544,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             </div>
             """, unsafe_allow_html=True)
             
-            # Como a entrada manual foi removida, esses valores são zerados por padrão
             rec_prop_cust = 0.0
             rec_prop_cap = 0.0
             devol_cust = 0.0
@@ -814,7 +818,7 @@ def render_empenhos_global_view():
         dados_edicao = st.session_state['empenho_em_edicao']
         is_edit_mode = dados_edicao is not None
         
-        # FIXING THE ERROR: Handling potential None for new entries
+        # Handle potential None for new entries
         val_prog = dados_edicao.get('programa') if is_edit_mode else None
         val_num = dados_edicao.get('numero_empenho', "") if is_edit_mode else ""
         val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
@@ -834,7 +838,6 @@ def render_empenhos_global_view():
         lista_programas = st.session_state['global_programs']
         if not lista_programas: lista_programas = ["Sem cadastro"]
         
-        # Handle index safely
         try:
             prog_index = lista_programas.index(val_prog) if (is_edit_mode and val_prog in lista_programas) else 0
         except ValueError:
@@ -856,11 +859,10 @@ def render_empenhos_global_view():
             
             ce7, ce8, ce9 = st.columns(3)
             status_opts = ["EXECUTADO", "PENDENTE", "CANCELADO"]
-            # Handle status index safely
             try:
                 status_idx = status_opts.index(val_status)
             except ValueError:
-                status_idx = 1 # Default to PENDENTE
+                status_idx = 1
                 
             e_status = ce7.selectbox("Status", status_opts, index=status_idx, key="form_status")
             e_data_nf = None
