@@ -6,9 +6,22 @@ from firebase_admin import credentials, firestore
 import json
 import os
 import base64
+import io
+import textwrap
+
+# --- TENTATIVA DE IMPORTAR REPORTLAB ---
+# Necessário instalar: pip install reportlab
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    HAS_REPORTLAB = True
+except ImportError:
+    HAS_REPORTLAB = False
 
 # Configuração da Página
-st.set_page_config(page_title="Gestão Financeira Escolar - PDDE", layout="wide")
+st.set_page_config(page_title="Gestão Financeira Escolar", layout="wide")
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -199,11 +212,117 @@ def apply_currency_format(df, cols):
             df[col] = df[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     return df
 
-# MOVIDO PARA O ESCOPO GLOBAL PARA EVITAR ERRO NameError
 def safe_date(date_str):
     if not date_str: return None
     try: return datetime.strptime(date_str, "%Y-%m-%d").date()
     except: return None
+
+# --- GERADOR DE PDF ---
+def create_empenho_pdf(data_dict):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    
+    # Configurações iniciais
+    c.setTitle(f"Empenho_{data_dict.get('numero_empenho')}")
+    
+    # Cabeçalho
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(2 * cm, height - 2 * cm, "RELATÓRIO DE EMPENHO / ORDEM DE PAGAMENTO")
+    c.line(2 * cm, height - 2.2 * cm, width - 2 * cm, height - 2.2 * cm)
+    
+    y = height - 3.5 * cm
+    left_margin = 2 * cm
+    
+    def draw_pair(label, value, x_offset, y_pos):
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x_offset, y_pos, f"{label}:")
+        c.setFont("Helvetica", 10)
+        c.drawString(x_offset + 3.5 * cm, y_pos, str(value) if value else "-")
+
+    # Bloco 1: Dados Principais
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(colors.darkblue)
+    c.drawString(left_margin, y, "1. DADOS DO EMPENHO")
+    c.setFillColor(colors.black)
+    y -= 0.8 * cm
+    
+    d_emp = datetime.strptime(data_dict.get('data_empenho'), "%Y-%m-%d").strftime("%d/%m/%Y") if data_dict.get('data_empenho') else "-"
+    
+    draw_pair("Programa", data_dict.get('programa'), left_margin, y)
+    y -= 0.6 * cm
+    draw_pair("Nº Empenho", data_dict.get('numero_empenho'), left_margin, y)
+    y -= 0.6 * cm
+    draw_pair("Data Empenho", d_emp, left_margin, y)
+    y -= 0.6 * cm
+    
+    val_fmt = format_currency(float(data_dict.get('valor', 0)))
+    draw_pair("Valor Total", val_fmt, left_margin, y)
+    
+    # Bloco 2: Pagamento e Execução
+    y -= 1.5 * cm
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(colors.darkblue)
+    c.drawString(left_margin, y, "2. DADOS DE PAGAMENTO E EXECUÇÃO")
+    c.setFillColor(colors.black)
+    y -= 0.8 * cm
+    
+    d_ob = datetime.strptime(data_dict.get('data_ob'), "%Y-%m-%d").strftime("%d/%m/%Y") if data_dict.get('data_ob') else "-"
+    d_nf = datetime.strptime(data_dict.get('data_nota_fiscal'), "%Y-%m-%d").strftime("%d/%m/%Y") if data_dict.get('data_nota_fiscal') else "-"
+    
+    draw_pair("Nº Ordem Banc.", data_dict.get('ordem_bancaria'), left_margin, y)
+    draw_pair("Data OB", d_ob, left_margin + 9 * cm, y)
+    y -= 0.6 * cm
+    draw_pair("Status Atual", data_dict.get('status'), left_margin, y)
+    draw_pair("Data Nota Fiscal", d_nf, left_margin + 9 * cm, y)
+    
+    # Bloco 3: Detalhes
+    y -= 1.5 * cm
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(colors.darkblue)
+    c.drawString(left_margin, y, "3. DETALHAMENTO / ITENS")
+    c.setFillColor(colors.black)
+    y -= 0.8 * cm
+    
+    # Texto multilinha
+    c.setFont("Helvetica", 10)
+    text = c.beginText(left_margin, y)
+    text.setFont("Helvetica", 10)
+    
+    itens_desc = data_dict.get('itens', 'Sem descrição.')
+    obs_desc = data_dict.get('observacao', '')
+    
+    lines = textwrap.wrap(itens_desc, width=85)
+    for line in lines:
+        text.textLine(line)
+    
+    c.drawText(text)
+    
+    y -= (len(lines) * 0.5 * cm) + 1.0 * cm
+    
+    if obs_desc:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(left_margin, y, "Observações:")
+        y -= 0.5 * cm
+        c.setFont("Helvetica", 10)
+        c.drawString(left_margin, y, obs_desc)
+        y -= 2 * cm
+    else:
+        y -= 1.5 * cm
+
+    # Assinatura Personalizada (Sem linha, com nome e cargo)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(width / 2, y - 0.5 * cm, "Luiz de Albuquerque Lins Neto")
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(width / 2, y - 1.0 * cm, "Assistente de Gestão")
+    
+    # Rodapé
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawString(left_margin, 2 * cm, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} - Sistema de Gestão de Empenhos")
+    
+    c.save()
+    buffer.seek(0)
+    return buffer
 
 def init_session_state():
     db = init_firebase()
@@ -248,7 +367,6 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
     movs = conta_data.get('movimentacoes', []) 
     saldo = 0.0
     
-    # 1. Recupera o Saldo MANUAL específico do ANO selecionado
     saldos_anuais = conta_data.get('saldos_anuais', {})
     str_ano = str(ano_alvo)
     
@@ -265,7 +383,6 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
     elif tipo_recurso == 'Total':
         saldo += (val_cap + val_cust)
 
-    # 2. Soma movimentações ocorridas DENTRO do ano selecionado, até o mês anterior
     for mov in movs:
         try:
             mov_ano = int(mov.get('ano', datetime.now().year))
@@ -544,6 +661,7 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             </div>
             """, unsafe_allow_html=True)
             
+            # Como a entrada manual foi removida, esses valores são zerados por padrão
             rec_prop_cust = 0.0
             rec_prop_cap = 0.0
             devol_cust = 0.0
@@ -777,17 +895,18 @@ def render_empenhos_global_view():
         st.markdown(f"**Registros Encontrados: {len(lista_final)}**")
 
         if lista_final:
-            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2, 1, 1.2, 1.2, 1])
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 2, 1, 1.2, 1.2, 0.8, 0.8])
             c1.markdown("<div class='row-header'>Data</div>", unsafe_allow_html=True)
             c2.markdown("<div class='row-header'>Programa</div>", unsafe_allow_html=True)
             c3.markdown("<div class='row-header'>Nº Emp.</div>", unsafe_allow_html=True)
             c4.markdown("<div class='row-header'>Valor</div>", unsafe_allow_html=True)
             c5.markdown("<div class='row-header'>Status</div>", unsafe_allow_html=True)
-            c6.markdown("<div class='row-header'>Ação</div>", unsafe_allow_html=True)
+            c6.markdown("<div class='row-header'>PDF</div>", unsafe_allow_html=True)
+            c7.markdown("<div class='row-header'>Ação</div>", unsafe_allow_html=True)
 
             for item in lista_final:
                 with st.container():
-                    col1, col2, col3, col4, col5, col6 = st.columns([1.2, 2, 1, 1.2, 1.2, 1])
+                    col1, col2, col3, col4, col5, col6, col7 = st.columns([1.2, 2, 1, 1.2, 1.2, 0.8, 0.8])
                     try: d_show = datetime.strptime(item.get('data_empenho', ''), "%Y-%m-%d").strftime("%d/%m/%Y")
                     except: d_show = "-"
                     val_show = format_currency(float(item.get('valor', 0)))
@@ -798,7 +917,14 @@ def render_empenhos_global_view():
                     col4.text(val_show)
                     col5.text(item.get('status', '-'))
                     
-                    if col6.button("✏️ Editar", key=f"btn_edit_{item['id']}"):
+                    # Botão PDF
+                    if HAS_REPORTLAB:
+                        pdf_data = create_empenho_pdf(item)
+                        col6.download_button("📄", data=pdf_data, file_name=f"empenho_{item.get('numero_empenho')}.pdf", mime='application/pdf', key=f"btn_pdf_{item['id']}")
+                    else:
+                        col6.text("-")
+
+                    if col7.button("✏️", key=f"btn_edit_{item['id']}"):
                         st.session_state['empenho_em_edicao'] = item
                         st.session_state['empenho_mode'] = 'form'
                         st.rerun()
@@ -818,7 +944,16 @@ def render_empenhos_global_view():
         dados_edicao = st.session_state['empenho_em_edicao']
         is_edit_mode = dados_edicao is not None
         
-        # Handle potential None for new entries
+        file_info = None
+        if is_edit_mode and dados_edicao.get('has_file'):
+            with st.spinner("Carregando anexo..."):
+                file_info = get_file_from_firebase(st.session_state['db_conn'], dados_edicao.get('id'))
+
+        def safe_date(date_str):
+            if not date_str: return None
+            try: return datetime.strptime(date_str, "%Y-%m-%d").date()
+            except: return None
+
         val_prog = dados_edicao.get('programa') if is_edit_mode else None
         val_num = dados_edicao.get('numero_empenho', "") if is_edit_mode else ""
         val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
@@ -829,11 +964,6 @@ def render_empenhos_global_view():
         val_status = dados_edicao.get('status', "PENDENTE") if is_edit_mode else "PENDENTE"
         val_obs = dados_edicao.get('observacao', "") if is_edit_mode else ""
         val_itens = dados_edicao.get('itens', "") if is_edit_mode else ""
-        
-        file_info = None
-        if is_edit_mode and dados_edicao.get('has_file'):
-            with st.spinner("Carregando anexo..."):
-                file_info = get_file_from_firebase(st.session_state['db_conn'], dados_edicao.get('id'))
 
         lista_programas = st.session_state['global_programs']
         if not lista_programas: lista_programas = ["Sem cadastro"]
@@ -845,6 +975,11 @@ def render_empenhos_global_view():
 
         titulo = "✏️ Editando Empenho" if is_edit_mode else "➕ Novo Empenho"
         st.markdown(f"### {titulo}")
+        
+        # Botão de Download na tela de edição
+        if is_edit_mode and HAS_REPORTLAB:
+            pdf_data = create_empenho_pdf(dados_edicao)
+            st.download_button("📄 Gerar Relatório em PDF", data=pdf_data, file_name=f"empenho_{val_num}.pdf", mime='application/pdf', key=f"btn_pdf_edit_{dados_edicao['id']}")
 
         with st.container(border=True):
             ce1, ce2, ce3 = st.columns(3)
@@ -951,96 +1086,96 @@ def render_empenhos_global_view():
                             st.rerun()
 
 def main():
-    init_session_state()
+    try:
+        init_session_state()
 
-    modulo, conta = sidebar_config()
+        modulo, conta = sidebar_config()
 
-    st.title("🏫 Gestão Financeira Escolar - PDDE")
+        st.title("🏫 Gestão Financeira Escolar")
 
-    if modulo == "🏦 Movimentação Financeira":
-        if conta:
-            st.header(f"📂 Conta: {conta}")
-            
-            anos = sorted(st.session_state['available_years'])
-            default_ix = len(anos) - 1 if anos else 0
-            if anos:
-                ano_atual = st.selectbox("📅 Exercício (Ano):", anos, index=default_ix)
+        if modulo == "🏦 Movimentação Financeira":
+            if conta:
+                st.header(f"📂 Conta: {conta}")
+                
+                anos = sorted(st.session_state['available_years'])
+                default_ix = len(anos) - 1 if anos else 0
+                if anos:
+                    ano_atual = st.selectbox("📅 Exercício (Ano):", anos, index=default_ix)
+                else:
+                    ano_atual = datetime.now().year
+                    st.info(f"Usando ano atual: {ano_atual} (Crie exercícios na barra lateral)")
+
+                dados_conta = st.session_state['accounts'][conta]
+                programas = dados_conta.get('programas', [])
+
+                with st.expander("⚙️ Gerenciar Programas da Conta"):
+                    c1, c2 = st.columns([3, 1])
+                    novo_p = c1.text_input("Novo Programa", key=f"novo_p_{conta}")
+                    if c2.button("Adicionar", key=f"btn_add_{conta}"):
+                        if novo_p and novo_p not in programas:
+                            programas.append(novo_p)
+                            st.session_state['accounts'][conta]['programas'] = programas
+                            save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
+                            st.rerun()
+                        elif novo_p:
+                            st.warning("Programa já existe.")
+
+                    st.divider()
+                    st.markdown("#### Programas Ativos:")
+                    for p_idx, p_name in enumerate(programas):
+                        cp1, cp2 = st.columns([4, 1])
+                        cp1.markdown(f"📌 **{p_name}**")
+                        if cp2.button("🗑️", key=f"del_prog_{conta}_{p_idx}"):
+                            programas.pop(p_idx)
+                            st.session_state['accounts'][conta]['programas'] = programas
+                            save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
+                            st.rerun()
+                    
+                    st.divider()
+                    st.markdown(f"#### 💰 Saldo Inicial / Anterior para {ano_atual}")
+                    st.caption(f"Defina aqui o saldo de abertura especificamente para o ano de {ano_atual}. Isso não afetará outros anos.")
+                    
+                    if 'saldos_anuais' not in dados_conta:
+                        dados_conta['saldos_anuais'] = {}
+                    str_ano = str(ano_atual)
+                    if str_ano not in dados_conta['saldos_anuais']:
+                        dados_conta['saldos_anuais'][str_ano] = {}
+                    
+                    saldos_mudaram = False
+                    for p_name in programas:
+                        vals_atuais = dados_conta['saldos_anuais'][str_ano].get(p_name, {'Capital': 0.0, 'Custeio': 0.0})
+                        
+                        st.markdown(f"**📂 {p_name}**")
+                        c_scap, c_scust = st.columns(2)
+                        
+                        novo_cap = c_scap.number_input(f"Saldo Anterior Capital ({ano_atual})", value=float(vals_atuais.get('Capital', 0.0)), key=f"sa_cap_{conta}_{ano_atual}_{p_name}")
+                        novo_cust = c_scust.number_input(f"Saldo Anterior Custeio ({ano_atual})", value=float(vals_atuais.get('Custeio', 0.0)), key=f"sa_cust_{conta}_{ano_atual}_{p_name}")
+                        
+                        if novo_cap != vals_atuais.get('Capital', 0.0) or novo_cust != vals_atuais.get('Custeio', 0.0):
+                            dados_conta['saldos_anuais'][str_ano][p_name] = {'Capital': novo_cap, 'Custeio': novo_cust}
+                            saldos_mudaram = True
+
+                    if saldos_mudaram:
+                        if st.button(f"💾 Salvar Saldos de {ano_atual}", key=f"save_saldos_{conta}_{ano_atual}"):
+                            save_account_to_firebase(st.session_state['db_conn'], conta, dados_conta)
+                            st.success(f"Saldos de {ano_atual} atualizados!")
+                            st.rerun()
+
+                if programas:
+                    render_financeiro_view(conta, ano_atual, programas)
+                else:
+                    st.warning("⚠️ Cadastre pelo menos um programa acima para iniciar os lançamentos.")
             else:
-                ano_atual = datetime.now().year
-                st.info(f"Usando ano atual: {ano_atual} (Crie exercícios na barra lateral)")
+                st.info("👈 Selecione uma conta existente ou crie uma nova na barra lateral para começar.")
 
-            dados_conta = st.session_state['accounts'][conta]
-            programas = dados_conta.get('programas', [])
+        elif modulo == "📜 Controle de Empenhos":
+            render_empenhos_global_view()
 
-            with st.expander("⚙️ Gerenciar Programas da Conta"):
-                # Adicionar Novo Programa
-                c1, c2 = st.columns([3, 1])
-                novo_p = c1.text_input("Novo Programa", key=f"novo_p_{conta}")
-                if c2.button("Adicionar", key=f"btn_add_{conta}"):
-                    if novo_p and novo_p not in programas:
-                        programas.append(novo_p)
-                        st.session_state['accounts'][conta]['programas'] = programas
-                        save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
-                        st.rerun()
-                    elif novo_p:
-                        st.warning("Programa já existe.")
-
-                st.divider()
-                st.markdown("#### Programas Ativos:")
-                for p_idx, p_name in enumerate(programas):
-                    cp1, cp2 = st.columns([4, 1])
-                    cp1.markdown(f"📌 **{p_name}**")
-                    if cp2.button("🗑️", key=f"del_prog_{conta}_{p_idx}"):
-                        programas.pop(p_idx)
-                        st.session_state['accounts'][conta]['programas'] = programas
-                        save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
-                        st.rerun()
-                
-                st.divider()
-                st.markdown(f"#### 💰 Saldo Inicial / Anterior para {ano_atual}")
-                st.caption(f"Defina aqui o saldo de abertura especificamente para o ano de {ano_atual}. Isso não afetará outros anos.")
-                
-                # Garante que a estrutura existe
-                if 'saldos_anuais' not in dados_conta:
-                    dados_conta['saldos_anuais'] = {}
-                str_ano = str(ano_atual)
-                if str_ano not in dados_conta['saldos_anuais']:
-                    dados_conta['saldos_anuais'][str_ano] = {}
-                
-                # Inputs para Saldo Anual
-                saldos_mudaram = False
-                for p_name in programas:
-                    # Recupera valores atuais ou 0.0
-                    vals_atuais = dados_conta['saldos_anuais'][str_ano].get(p_name, {'Capital': 0.0, 'Custeio': 0.0})
-                    
-                    st.markdown(f"**📂 {p_name}**")
-                    c_scap, c_scust = st.columns(2)
-                    
-                    novo_cap = c_scap.number_input(f"Saldo Anterior Capital ({ano_atual})", value=float(vals_atuais.get('Capital', 0.0)), key=f"sa_cap_{conta}_{ano_atual}_{p_name}")
-                    novo_cust = c_scust.number_input(f"Saldo Anterior Custeio ({ano_atual})", value=float(vals_atuais.get('Custeio', 0.0)), key=f"sa_cust_{conta}_{ano_atual}_{p_name}")
-                    
-                    if novo_cap != vals_atuais.get('Capital', 0.0) or novo_cust != vals_atuais.get('Custeio', 0.0):
-                        dados_conta['saldos_anuais'][str_ano][p_name] = {'Capital': novo_cap, 'Custeio': novo_cust}
-                        saldos_mudaram = True
-
-                if saldos_mudaram:
-                    if st.button(f"💾 Salvar Saldos de {ano_atual}", key=f"save_saldos_{conta}_{ano_atual}"):
-                        save_account_to_firebase(st.session_state['db_conn'], conta, dados_conta)
-                        st.success(f"Saldos de {ano_atual} atualizados!")
-                        st.rerun()
-
-            if programas:
-                render_financeiro_view(conta, ano_atual, programas)
-            else:
-                st.warning("⚠️ Cadastre pelo menos um programa acima para iniciar os lançamentos.")
-        else:
-            st.info("👈 Selecione uma conta existente ou crie uma nova na barra lateral para começar.")
-
-    elif modulo == "📜 Controle de Empenhos":
-        render_empenhos_global_view()
-
-    elif modulo == "📈 Resumo Consolidado":
-        render_resumo_consolidado_view()
+        elif modulo == "📈 Resumo Consolidado":
+            render_resumo_consolidado_view()
+    
+    except Exception as e:
+        st.error(f"Ocorreu um erro inesperado: {e}")
 
 if __name__ == "__main__":
     main()
