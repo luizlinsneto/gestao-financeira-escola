@@ -10,7 +10,6 @@ import io
 import textwrap
 
 # --- TENTATIVA DE IMPORTAR REPORTLAB ---
-# Necessário instalar: pip install reportlab
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -20,7 +19,7 @@ try:
 except ImportError:
     HAS_REPORTLAB = False
 
-# Configuração da Página
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gestão Financeira Escolar", layout="wide")
 
 # --- ESTILOS CSS ---
@@ -30,11 +29,12 @@ st.markdown("""
     .big-font { font-size: 18px !important; font-weight: bold; }
     div[data-testid="stMetricValue"] { font-size: 24px; }
     .download-box {
-        padding: 15px;
+        padding: 10px;
         background-color: #f0fdf4;
         border: 1px solid #bbf7d0;
-        border-radius: 8px;
-        margin-bottom: 10px;
+        border-radius: 5px;
+        margin-bottom: 5px;
+        font-size: 14px;
     }
     .row-header { font-weight: bold; border-bottom: 2px solid #ddd; padding: 5px; }
     .warning-box {
@@ -116,33 +116,50 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES ARQUIVOS ---
-def save_file_to_firebase(db, empenho_id, file_obj):
-    if db is None or file_obj is None: return
+# --- FUNÇÕES ARQUIVOS (2 ARQUIVOS) ---
+def save_files_to_firebase(db, empenho_id, file_nf, file_comprovante):
+    if db is None: return False
     try:
-        if file_obj.size > 2 * 1024 * 1024: 
-            st.error("Arquivo muito grande! O limite recomendado é 2MB.")
-            return False
-        file_bytes = file_obj.read()
-        b64_string = base64.b64encode(file_bytes).decode('utf-8')
-        db.collection('pdde_arquivos').document(empenho_id).set({
-            'file_name': file_obj.name,
-            'file_data': b64_string
-        })
-        return True
+        doc_ref = db.collection('pdde_arquivos').document(empenho_id)
+        update_data = {}
+        
+        # Nota Fiscal
+        if file_nf:
+            if file_nf.size > 2 * 1024 * 1024:
+                st.warning(f"Nota Fiscal muito grande ({file_nf.name}). Limite 2MB.")
+            else:
+                file_bytes = file_nf.read()
+                b64_string = base64.b64encode(file_bytes).decode('utf-8')
+                update_data['nf_name'] = file_nf.name
+                update_data['nf_data'] = b64_string
+        
+        # Comprovante
+        if file_comprovante:
+            if file_comprovante.size > 2 * 1024 * 1024:
+                st.warning(f"Comprovante muito grande ({file_comprovante.name}). Limite 2MB.")
+            else:
+                file_bytes = file_comprovante.read()
+                b64_string = base64.b64encode(file_bytes).decode('utf-8')
+                update_data['comp_name'] = file_comprovante.name
+                update_data['comp_data'] = b64_string
+
+        if update_data:
+            doc_ref.set(update_data, merge=True)
+            return True
+        return True 
     except Exception as e:
-        st.error(f"Erro ao salvar arquivo: {e}")
+        st.error(f"Erro ao salvar arquivos: {e}")
         return False
 
-def get_file_from_firebase(db, empenho_id):
-    if db is None: return None
+def get_files_from_firebase(db, empenho_id):
+    if db is None: return {}
     try:
         doc = db.collection('pdde_arquivos').document(empenho_id).get()
         if doc.exists:
             return doc.to_dict()
-        return None
+        return {}
     except:
-        return None
+        return {}
 
 def delete_file_from_firebase(db, empenho_id):
     if db is None: return
@@ -223,10 +240,8 @@ def create_empenho_pdf(data_dict):
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     
-    # Configurações iniciais
     c.setTitle(f"Empenho_{data_dict.get('numero_empenho')}")
     
-    # Cabeçalho
     c.setFont("Helvetica-Bold", 16)
     c.drawString(2 * cm, height - 2 * cm, "RELATÓRIO DE EMPENHO / ORDEM DE PAGAMENTO")
     c.line(2 * cm, height - 2.2 * cm, width - 2 * cm, height - 2.2 * cm)
@@ -240,7 +255,6 @@ def create_empenho_pdf(data_dict):
         c.setFont("Helvetica", 10)
         c.drawString(x_offset + 3.5 * cm, y_pos, str(value) if value else "-")
 
-    # Bloco 1: Dados Principais
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(colors.darkblue)
     c.drawString(left_margin, y, "1. DADOS DO EMPENHO")
@@ -248,18 +262,15 @@ def create_empenho_pdf(data_dict):
     y -= 0.8 * cm
     
     d_emp = datetime.strptime(data_dict.get('data_empenho'), "%Y-%m-%d").strftime("%d/%m/%Y") if data_dict.get('data_empenho') else "-"
-    
     draw_pair("Programa", data_dict.get('programa'), left_margin, y)
     y -= 0.6 * cm
     draw_pair("Nº Empenho", data_dict.get('numero_empenho'), left_margin, y)
     y -= 0.6 * cm
     draw_pair("Data Empenho", d_emp, left_margin, y)
     y -= 0.6 * cm
-    
     val_fmt = format_currency(float(data_dict.get('valor', 0)))
     draw_pair("Valor Total", val_fmt, left_margin, y)
     
-    # Bloco 2: Pagamento e Execução
     y -= 1.5 * cm
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(colors.darkblue)
@@ -276,7 +287,6 @@ def create_empenho_pdf(data_dict):
     draw_pair("Status Atual", data_dict.get('status'), left_margin, y)
     draw_pair("Data Nota Fiscal", d_nf, left_margin + 9 * cm, y)
     
-    # Bloco 3: Detalhes
     y -= 1.5 * cm
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(colors.darkblue)
@@ -284,7 +294,6 @@ def create_empenho_pdf(data_dict):
     c.setFillColor(colors.black)
     y -= 0.8 * cm
     
-    # Texto multilinha
     c.setFont("Helvetica", 10)
     text = c.beginText(left_margin, y)
     text.setFont("Helvetica", 10)
@@ -295,7 +304,6 @@ def create_empenho_pdf(data_dict):
     lines = textwrap.wrap(itens_desc, width=85)
     for line in lines:
         text.textLine(line)
-    
     c.drawText(text)
     
     y -= (len(lines) * 0.5 * cm) + 1.0 * cm
@@ -310,13 +318,11 @@ def create_empenho_pdf(data_dict):
     else:
         y -= 1.5 * cm
 
-    # Assinatura Personalizada (Sem linha, com nome e cargo)
     c.setFont("Helvetica-Bold", 10)
     c.drawCentredString(width / 2, y - 0.5 * cm, "Luiz de Albuquerque Lins Neto")
     c.setFont("Helvetica", 10)
     c.drawCentredString(width / 2, y - 1.0 * cm, "Assistente de Gestão")
     
-    # Rodapé
     c.setFont("Helvetica-Oblique", 8)
     c.drawString(left_margin, 2 * cm, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} - Sistema de Gestão de Empenhos")
     
@@ -361,7 +367,6 @@ def init_session_state():
                 pass
         st.session_state['available_years'] = sorted(list(anos_encontrados))
 
-# --- CÁLCULO DE SALDO COM BASE NO ANO ---
 def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo):
     conta_data = st.session_state['accounts'][account_name]
     movs = conta_data.get('movimentacoes', []) 
@@ -402,6 +407,35 @@ def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo)
             elif tipo_recurso == 'Total':
                 saldo += (mov['total_credito'] + mov['total_rendimento'] - mov['total_debito'])
     return saldo
+
+def calcular_rateio_rendimento(conta, mes_num, ano, rendimento_total_banco, dados_entrada):
+    saldos_base = {}
+    total_saldo_conta = 0.0
+    for prog, valores in dados_entrada.items():
+        saldo_ant_cap = get_saldo_anterior(conta, prog, 'Capital', mes_num, ano)
+        saldo_ant_cus = get_saldo_anterior(conta, prog, 'Custeio', mes_num, ano)
+        base_cap = max(0, saldo_ant_cap + valores['cred_cap'] - valores['deb_cap'])
+        base_cus = max(0, saldo_ant_cus + valores['cred_cus'] - valores['deb_cus'])
+        saldos_base[prog] = { 'Capital': base_cap, 'Custeio': base_cus }
+        total_saldo_conta += (base_cap + base_cus)
+    
+    resultados = []
+    for prog, valores in dados_entrada.items():
+        base_prog = saldos_base[prog]
+        fator_cap = base_prog['Capital'] / total_saldo_conta if total_saldo_conta > 0 else 0
+        fator_cus = base_prog['Custeio'] / total_saldo_conta if total_saldo_conta > 0 else 0
+        rend_cap = rendimento_total_banco * fator_cap
+        rend_cus = rendimento_total_banco * fator_cus
+        resultados.append({
+            'programa': prog, 'mes_num': mes_num, 'ano': ano,
+            'credito_capital': valores['cred_cap'], 'credito_custeio': valores['cred_cus'],
+            'debito_capital': valores['deb_cap'], 'debito_custeio': valores['deb_cus'],
+            'rendimento_capital': rend_cap, 'rendimento_custeio': rend_cus,
+            'total_credito': valores['cred_cap'] + valores['cred_cus'],
+            'total_debito': valores['deb_cap'] + valores['deb_cus'],
+            'total_rendimento': rend_cap + rend_cus
+        })
+    return resultados
 
 def sidebar_config():
     if st.session_state['db_conn'] is None:
@@ -470,7 +504,8 @@ def sidebar_config():
                                     st.rerun()
                         elif novo_nome_conta in contas_existentes:
                             st.warning("Nome já existe!")
-                else: st.info("Sem contas.")
+                else:
+                    st.info("Sem contas.")
             with tab_del:
                 if contas_existentes:
                     conta_del = st.selectbox("Apagar Conta:", contas_existentes, key="sel_del_acc")
@@ -480,7 +515,8 @@ def sidebar_config():
                             delete_account_from_firebase(st.session_state['db_conn'], conta_del)
                             st.success(f"Conta {conta_del} excluída!")
                             st.rerun()
-                else: st.info("Nenhuma conta para excluir.")
+                else:
+                    st.info("Nenhuma conta para excluir.")
 
     with st.sidebar.expander("📅 Gerenciar Exercícios (Anos)"):
         novo_ano = st.number_input("Adicionar Ano", min_value=2000, max_value=2050, value=datetime.now().year + 1, step=1)
@@ -493,35 +529,6 @@ def sidebar_config():
             else:
                 st.warning("Este ano já existe.")
     return modulo_selecionado, conta_selecionada
-
-def calcular_rateio_rendimento(conta, mes_num, ano, rendimento_total_banco, dados_entrada):
-    saldos_base = {}
-    total_saldo_conta = 0.0
-    for prog, valores in dados_entrada.items():
-        saldo_ant_cap = get_saldo_anterior(conta, prog, 'Capital', mes_num, ano)
-        saldo_ant_cus = get_saldo_anterior(conta, prog, 'Custeio', mes_num, ano)
-        base_cap = max(0, saldo_ant_cap + valores['cred_cap'] - valores['deb_cap'])
-        base_cus = max(0, saldo_ant_cus + valores['cred_cus'] - valores['deb_cus'])
-        saldos_base[prog] = { 'Capital': base_cap, 'Custeio': base_cus }
-        total_saldo_conta += (base_cap + base_cus)
-    
-    resultados = []
-    for prog, valores in dados_entrada.items():
-        base_prog = saldos_base[prog]
-        fator_cap = base_prog['Capital'] / total_saldo_conta if total_saldo_conta > 0 else 0
-        fator_cus = base_prog['Custeio'] / total_saldo_conta if total_saldo_conta > 0 else 0
-        rend_cap = rendimento_total_banco * fator_cap
-        rend_cus = rendimento_total_banco * fator_cus
-        resultados.append({
-            'programa': prog, 'mes_num': mes_num, 'ano': ano,
-            'credito_capital': valores['cred_cap'], 'credito_custeio': valores['cred_cus'],
-            'debito_capital': valores['deb_cap'], 'debito_custeio': valores['deb_cus'],
-            'rendimento_capital': rend_cap, 'rendimento_custeio': rend_cus,
-            'total_credito': valores['cred_cap'] + valores['cred_cus'],
-            'total_debito': valores['deb_cap'] + valores['deb_cus'],
-            'total_rendimento': rend_cap + rend_cus
-        })
-    return resultados
 
 def render_financeiro_view(conta_atual, ano_atual, programas):
     tab_lanc, tab_rel, tab_resumo = st.tabs(["📝 Lançamentos", "📑 Extrato Mensal", "📊 Resumo Geral"])
@@ -555,7 +562,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             v_dc = float(prog_data['debito_capital']) if prog_data else 0.0
             v_dec = float(prog_data['debito_custeio']) if prog_data else 0.0
 
-            # Saldo considera o ANO selecionado
             saldo_disp_cap = get_saldo_anterior(conta_atual, prog, 'Capital', mes_selecionado, ano_atual)
             saldo_disp_cust = get_saldo_anterior(conta_atual, prog, 'Custeio', mes_selecionado, ano_atual)
 
@@ -648,11 +654,9 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
         prog_demo = st.selectbox("Selecione o Programa para Detalhar:", options=programas, key=f"sel_demo_{conta_atual}_{ano_atual}")
         
         if prog_demo:
-            # Pega o saldo de abertura do ano (Mês 1) que inclui o valor manual configurado na barra lateral
             s_reprog_cap = get_saldo_anterior(conta_atual, prog_demo, 'Capital', 1, ano_atual)
             s_reprog_cust = get_saldo_anterior(conta_atual, prog_demo, 'Custeio', 1, ano_atual)
             
-            # Avisa o usuário qual programa está vendo e o saldo encontrado
             st.markdown(f"""
             <div class="info-box">
                 Mostrando dados para: <b>{prog_demo}</b><br>
@@ -661,7 +665,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
             </div>
             """, unsafe_allow_html=True)
             
-            # Como a entrada manual foi removida, esses valores são zerados por padrão
             rec_prop_cust = 0.0
             rec_prop_cap = 0.0
             devol_cust = 0.0
@@ -754,7 +757,6 @@ def render_financeiro_view(conta_atual, ano_atual, programas):
                 df_resumo_display = apply_currency_format(df_resumo.copy(), cols_num)
                 st.dataframe(df_resumo_display.style.apply(highlight_total_resumo, axis=1), use_container_width=True)
 
-# === VISUALIZAÇÃO 3: RESUMO CONSOLIDADO ===
 def render_resumo_consolidado_view():
     st.subheader("📈 Resumo Geral Consolidado (Todas as Contas)")
     anos_disp = sorted(st.session_state.get('available_years', [datetime.now().year]))
@@ -839,6 +841,9 @@ def render_resumo_consolidado_view():
 def render_empenhos_global_view():
     st.subheader("📜 Controle de Empenhos e Ordens de Pagamento (Global)")
     
+    if not HAS_REPORTLAB:
+        st.warning("⚠️ Biblioteca 'reportlab' não encontrada. A geração de PDF estará desabilitada. (pip install reportlab)")
+
     with st.expander("⚙️ Cadastrar/Gerenciar Programas"):
         c_p1, c_p2 = st.columns([3, 1])
         novo_prog_global = c_p1.text_input("Novo Programa", key="new_prog_global")
@@ -917,7 +922,6 @@ def render_empenhos_global_view():
                     col4.text(val_show)
                     col5.text(item.get('status', '-'))
                     
-                    # Botão PDF
                     if HAS_REPORTLAB:
                         pdf_data = create_empenho_pdf(item)
                         col6.download_button("📄", data=pdf_data, file_name=f"empenho_{item.get('numero_empenho')}.pdf", mime='application/pdf', key=f"btn_pdf_{item['id']}")
@@ -944,16 +948,6 @@ def render_empenhos_global_view():
         dados_edicao = st.session_state['empenho_em_edicao']
         is_edit_mode = dados_edicao is not None
         
-        file_info = None
-        if is_edit_mode and dados_edicao.get('has_file'):
-            with st.spinner("Carregando anexo..."):
-                file_info = get_file_from_firebase(st.session_state['db_conn'], dados_edicao.get('id'))
-
-        def safe_date(date_str):
-            if not date_str: return None
-            try: return datetime.strptime(date_str, "%Y-%m-%d").date()
-            except: return None
-
         val_prog = dados_edicao.get('programa') if is_edit_mode else None
         val_num = dados_edicao.get('numero_empenho', "") if is_edit_mode else ""
         val_data = safe_date(dados_edicao.get('data_empenho')) if is_edit_mode else None
@@ -964,6 +958,11 @@ def render_empenhos_global_view():
         val_status = dados_edicao.get('status', "PENDENTE") if is_edit_mode else "PENDENTE"
         val_obs = dados_edicao.get('observacao', "") if is_edit_mode else ""
         val_itens = dados_edicao.get('itens', "") if is_edit_mode else ""
+        
+        current_files = {}
+        if is_edit_mode:
+            with st.spinner("Carregando anexos..."):
+                current_files = get_files_from_firebase(st.session_state['db_conn'], dados_edicao.get('id'))
 
         lista_programas = st.session_state['global_programs']
         if not lista_programas: lista_programas = ["Sem cadastro"]
@@ -976,7 +975,6 @@ def render_empenhos_global_view():
         titulo = "✏️ Editando Empenho" if is_edit_mode else "➕ Novo Empenho"
         st.markdown(f"### {titulo}")
         
-        # Botão de Download na tela de edição
         if is_edit_mode and HAS_REPORTLAB:
             pdf_data = create_empenho_pdf(dados_edicao)
             st.download_button("📄 Gerar Relatório em PDF", data=pdf_data, file_name=f"empenho_{val_num}.pdf", mime='application/pdf', key=f"btn_pdf_edit_{dados_edicao['id']}")
@@ -1008,16 +1006,43 @@ def render_empenhos_global_view():
             e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, height=100, key="form_itens")
 
             st.markdown("---")
-            if is_edit_mode and file_info:
-                st.markdown(f"<div class='download-box'><b>Arquivo atual:</b> {file_info.get('file_name', 'arquivo.pdf')}</div>", unsafe_allow_html=True)
-                b64_data = file_info.get('file_data')
+            st.subheader("📎 Anexos (Máx 2MB cada)")
+            
+            # --- COMPATIBILIDADE COM ARQUIVOS ANTIGOS ---
+            if current_files.get('file_data'):
+                st.markdown("**🗃️ Arquivo Original (Legado)**")
+                st.markdown(f"<div class='download-box'>Arquivo Antigo: <b>{current_files.get('file_name', 'arquivo.pdf')}</b></div>", unsafe_allow_html=True)
                 try:
-                    bin_data = base64.b64decode(b64_data)
-                    st.download_button(label="⬇️ Baixar Arquivo Atual", data=bin_data, file_name=file_info.get('file_name', 'arquivo.pdf'), mime='application/pdf')
-                except: st.error("Erro ao preparar download.")
-                e_file = st.file_uploader("Substituir arquivo (Opcional)", type=["pdf"], key="form_file")
-            else:
-                e_file = st.file_uploader("Fazer upload de PDF (Máx 2MB)", type=["pdf"], key="form_file")
+                    bin_old = base64.b64decode(current_files.get('file_data'))
+                    st.download_button("⬇️ Baixar Arquivo Original", data=bin_old, file_name=current_files.get('file_name', 'arquivo.pdf'), key="dl_old")
+                except: 
+                    st.error("Erro no download.")
+                st.write("---")
+            
+            col_file1, col_file2 = st.columns(2)
+            
+            with col_file1:
+                st.markdown("**📁 Nota Fiscal**")
+                if current_files.get('nf_data'):
+                    st.markdown(f"<div class='download-box'>Arquivo atual: <b>{current_files.get('nf_name', 'nf.pdf')}</b></div>", unsafe_allow_html=True)
+                    try:
+                        bin_nf = base64.b64decode(current_files.get('nf_data'))
+                        st.download_button("⬇️ Baixar Nota Fiscal", data=bin_nf, file_name=current_files.get('nf_name', 'nf.pdf'), key="dl_nf")
+                    except: st.error("Erro no download.")
+                
+                e_file_nf = st.file_uploader("Enviar Nota Fiscal", type=["pdf", "jpg", "png", "jpeg"], key="up_nf")
+
+            with col_file2:
+                st.markdown("**📂 Comprovante de Pagamento**")
+                if current_files.get('comp_data'):
+                    st.markdown(f"<div class='download-box'>Arquivo atual: <b>{current_files.get('comp_name', 'recibo.pdf')}</b></div>", unsafe_allow_html=True)
+                    try:
+                        bin_comp = base64.b64decode(current_files.get('comp_data'))
+                        st.download_button("⬇️ Baixar Comprovante", data=bin_comp, file_name=current_files.get('comp_name', 'recibo.pdf'), key="dl_comp")
+                    except: st.error("Erro no download.")
+                
+                e_file_comp = st.file_uploader("Enviar Comprovante", type=["pdf", "jpg", "png", "jpeg"], key="up_comp")
+
             st.markdown("---")
 
             c_act1, c_act2, c_act3 = st.columns([1, 1, 4])
@@ -1042,14 +1067,15 @@ def render_empenhos_global_view():
 
                 target_id = dados_edicao.get('id') if is_edit_mode else str(datetime.now().timestamp())
                 
-                if e_file:
-                    ok = save_file_to_firebase(st.session_state['db_conn'], target_id, e_file)
-                    if ok:
-                        payload['has_file'] = True
-                        payload['file_name'] = e_file.name
-                elif is_edit_mode and dados_edicao.get('has_file'):
-                    payload['has_file'] = True
-                    payload['file_name'] = dados_edicao.get('file_name')
+                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_nf, e_file_comp)
+                
+                has_any_file = False
+                if e_file_nf or e_file_comp: 
+                    has_any_file = True
+                elif is_edit_mode and (current_files.get('nf_data') or current_files.get('comp_data') or current_files.get('file_data')): 
+                    has_any_file = True
+                
+                payload['has_file'] = has_any_file 
 
                 if is_edit_mode:
                     idx = -1
@@ -1173,9 +1199,9 @@ def main():
 
         elif modulo == "📈 Resumo Consolidado":
             render_resumo_consolidado_view()
-    
+            
     except Exception as e:
-        st.error(f"Ocorreu um erro inesperado: {e}")
+        st.error(f"Ocorreu um erro no sistema: {e}")
 
 if __name__ == "__main__":
     main()
