@@ -155,85 +155,80 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES ARQUIVOS (AGORA COM 5 ARQUIVOS: Emp, NF, Comp, Chq1, Chq2) ---
+# --- FUNÇÕES ARQUIVOS (SALVAMENTO FRAGMENTADO PARA EVITAR LIMITE DE 1MB) ---
+def save_single_file(db, doc_id, file_obj, name_key, data_key):
+    """Salva um único arquivo em um documento separado"""
+    if file_obj:
+        # Limite de ~750KB para evitar erro de 1MB do Firestore após Base64
+        if file_obj.size > 750 * 1024:
+            st.error(f"⚠️ O arquivo {file_obj.name} tem mais de 700KB. Por favor, comprima o arquivo antes de enviar.")
+            return False
+        
+        file_bytes = file_obj.read()
+        b64_string = base64.b64encode(file_bytes).decode('utf-8')
+        
+        db.collection('pdde_arquivos').document(doc_id).set({
+            name_key: file_obj.name,
+            data_key: b64_string
+        })
+        return True
+    return False
+
 def save_files_to_firebase(db, empenho_id, file_emp, file_nf, file_comprovante, file_cheque1, file_cheque2):
     if db is None: return False
     try:
-        doc_ref = db.collection('pdde_arquivos').document(empenho_id)
-        update_data = {}
-        
-        # Processa Arquivo do Empenho
-        if file_emp:
-            if file_emp.size > 2 * 1024 * 1024:
-                st.warning(f"Arquivo do Empenho muito grande ({file_emp.name}). Limite 2MB.")
-            else:
-                file_bytes = file_emp.read()
-                b64_string = base64.b64encode(file_bytes).decode('utf-8')
-                update_data['emp_name'] = file_emp.name
-                update_data['emp_data'] = b64_string
-
-        # Processa Nota Fiscal
-        if file_nf:
-            if file_nf.size > 2 * 1024 * 1024:
-                st.warning(f"Nota Fiscal muito grande ({file_nf.name}). Limite 2MB.")
-            else:
-                file_bytes = file_nf.read()
-                b64_string = base64.b64encode(file_bytes).decode('utf-8')
-                update_data['nf_name'] = file_nf.name
-                update_data['nf_data'] = b64_string
-        
-        # Processa Comprovante
-        if file_comprovante:
-            if file_comprovante.size > 2 * 1024 * 1024:
-                st.warning(f"Comprovante muito grande ({file_comprovante.name}). Limite 2MB.")
-            else:
-                file_bytes = file_comprovante.read()
-                b64_string = base64.b64encode(file_bytes).decode('utf-8')
-                update_data['comp_name'] = file_comprovante.name
-                update_data['comp_data'] = b64_string
-
-        # Processa Cheque 1
-        if file_cheque1:
-            if file_cheque1.size > 2 * 1024 * 1024:
-                st.warning(f"Cheque 1 muito grande ({file_cheque1.name}). Limite 2MB.")
-            else:
-                file_bytes = file_cheque1.read()
-                b64_string = base64.b64encode(file_bytes).decode('utf-8')
-                update_data['chq_name'] = file_cheque1.name
-                update_data['chq_data'] = b64_string
-                
-        # Processa Cheque 2
-        if file_cheque2:
-            if file_cheque2.size > 2 * 1024 * 1024:
-                st.warning(f"Cheque 2 muito grande ({file_cheque2.name}). Limite 2MB.")
-            else:
-                file_bytes = file_cheque2.read()
-                b64_string = base64.b64encode(file_bytes).decode('utf-8')
-                update_data['chq2_name'] = file_cheque2.name
-                update_data['chq2_data'] = b64_string
-
-        if update_data:
-            doc_ref.set(update_data, merge=True)
-            return True
-        return True 
+        # Salva cada arquivo em um documento SEPARADO para evitar o erro 400 (Max size 1MB)
+        save_single_file(db, f"{empenho_id}_emp", file_emp, 'emp_name', 'emp_data')
+        save_single_file(db, f"{empenho_id}_nf", file_nf, 'nf_name', 'nf_data')
+        save_single_file(db, f"{empenho_id}_comp", file_comprovante, 'comp_name', 'comp_data')
+        save_single_file(db, f"{empenho_id}_chq", file_cheque1, 'chq_name', 'chq_data')
+        save_single_file(db, f"{empenho_id}_chq2", file_cheque2, 'chq2_name', 'chq2_data')
+        return True
     except Exception as e:
         st.error(f"Erro ao salvar arquivos: {e}")
         return False
 
 def get_files_from_firebase(db, empenho_id):
     if db is None: return {}
+    
+    combined_data = {}
     try:
-        doc = db.collection('pdde_arquivos').document(empenho_id).get()
-        if doc.exists:
-            return doc.to_dict()
-        return {}
-    except:
-        return {}
+        # Tenta buscar arquivo legado (antigo formato único)
+        doc_legado = db.collection('pdde_arquivos').document(empenho_id).get()
+        if doc_legado.exists:
+            combined_data.update(doc_legado.to_dict())
+
+        # Busca os documentos fragmentados
+        docs_to_check = [
+            (f"{empenho_id}_emp", 'emp_name', 'emp_data'),
+            (f"{empenho_id}_nf", 'nf_name', 'nf_data'),
+            (f"{empenho_id}_comp", 'comp_name', 'comp_data'),
+            (f"{empenho_id}_chq", 'chq_name', 'chq_data'),
+            (f"{empenho_id}_chq2", 'chq2_name', 'chq2_data')
+        ]
+        
+        for doc_id, name_k, data_k in docs_to_check:
+            doc = db.collection('pdde_arquivos').document(doc_id).get()
+            if doc.exists:
+                d = doc.to_dict()
+                if name_k in d: combined_data[name_k] = d[name_k]
+                if data_k in d: combined_data[data_k] = d[data_k]
+                
+        return combined_data
+    except Exception as e:
+        return combined_data
 
 def delete_file_from_firebase(db, empenho_id):
     if db is None: return
     try:
-        db.collection('pdde_arquivos').document(empenho_id).delete()
+        col = db.collection('pdde_arquivos')
+        # Apaga o legado e os fragmentos
+        col.document(empenho_id).delete()
+        col.document(f"{empenho_id}_emp").delete()
+        col.document(f"{empenho_id}_nf").delete()
+        col.document(f"{empenho_id}_comp").delete()
+        col.document(f"{empenho_id}_chq").delete()
+        col.document(f"{empenho_id}_chq2").delete()
     except:
         pass
 
@@ -1030,14 +1025,14 @@ def render_empenhos_global_view():
                 status_idx = 1
                 
             e_status = ce7.selectbox("Status", status_opts, index=status_idx, key="form_status")
-            e_data_nf = ce8.date_input("Data NF / Cheque / Recibo", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
+            e_data_nf = ce8.date_input("Data NF / Cheque", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
             e_obs = ce9.text_input("Observação", value=val_obs, key="form_obs")
+            
             e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, height=100, key="form_itens")
 
             st.markdown("---")
-            st.subheader("📎 Anexos (Opcionais - Máx 2MB cada)")
+            st.subheader("📎 Anexos (Opcionais - Máx 700KB cada)")
             
-            # --- ORGANIZANDO OS 5 UPLOADS ---
             col_file1, col_file2 = st.columns(2)
             col_file3, col_file4 = st.columns(2)
             col_file5, _ = st.columns(2)
@@ -1086,7 +1081,7 @@ def render_empenhos_global_view():
                         st.download_button("⬇️ Baixar Cheque 1", data=bin_chq, file_name=current_files.get('chq_name', 'cheque1.pdf'), key="dl_chq")
                     except: st.error("Erro no download.")
                 
-                e_file_cheque = st.file_uploader("Enviar Cheque 1", type=["pdf", "jpg", "png", "jpeg"], key="up_chq")
+                e_file_cheque1 = st.file_uploader("Enviar Cheque 1", type=["pdf", "jpg", "png", "jpeg"], key="up_chq")
                 
             with col_file5:
                 st.markdown("**🎟️ Cheque / Recibo 2**")
@@ -1107,7 +1102,7 @@ def render_empenhos_global_view():
                 if not e_data:
                     st.error("⚠️ A Data do Empenho é obrigatória!")
                     return
-                
+
                 str_d_emp = e_data.strftime("%Y-%m-%d")
                 str_d_ob = e_data_ob.strftime("%Y-%m-%d") if e_data_ob else ""
                 str_d_nf = e_data_nf.strftime("%Y-%m-%d") if e_data_nf else ""
@@ -1120,10 +1115,10 @@ def render_empenhos_global_view():
 
                 target_id = dados_edicao.get('id') if is_edit_mode else str(datetime.now().timestamp())
                 
-                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_emp, e_file_nf, e_file_comp, e_file_cheque, e_file_cheque2)
+                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_emp, e_file_nf, e_file_comp, e_file_cheque1, e_file_cheque2)
                 
                 has_any_file = False
-                if e_file_emp or e_file_nf or e_file_comp or e_file_cheque or e_file_cheque2: 
+                if e_file_emp or e_file_nf or e_file_comp or e_file_cheque1 or e_file_cheque2: 
                     has_any_file = True
                 elif is_edit_mode and (current_files.get('emp_data') or current_files.get('file_data') or current_files.get('nf_data') or current_files.get('comp_data') or current_files.get('chq_data') or current_files.get('chq2_data')): 
                     has_any_file = True
