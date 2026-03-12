@@ -35,6 +35,7 @@ st.markdown("""
         border-radius: 5px;
         margin-bottom: 5px;
         font-size: 14px;
+        text-align: center;
     }
     .row-header { font-weight: bold; border-bottom: 2px solid #ddd; padding: 5px; }
     .warning-box {
@@ -82,6 +83,44 @@ def init_firebase():
             return None
     return firestore.client()
 
+# --- FUNÇÕES DE SESSÃO ---
+def init_session_state():
+    db = init_firebase()
+    st.session_state['db_conn'] = db
+    
+    if 'accounts' not in st.session_state:
+        if db:
+            with st.spinner('Conectando ao banco de dados...'):
+                st.session_state['accounts'] = load_accounts_from_firebase(db)
+        else:
+            st.session_state['accounts'] = {}
+            
+    if 'empenhos_global' not in st.session_state:
+        if db:
+            st.session_state['empenhos_global'] = load_empenhos_from_firebase(db)
+        else:
+            st.session_state['empenhos_global'] = []
+
+    if 'global_programs' not in st.session_state:
+        if db:
+            st.session_state['global_programs'] = load_global_programs_from_firebase(db)
+        else:
+            st.session_state['global_programs'] = []
+        
+    if 'available_years' not in st.session_state:
+        current_year = datetime.now().year
+        anos_encontrados = set([current_year])
+        for conta in st.session_state['accounts'].values():
+            for mov in conta.get('movimentacoes', []):
+                anos_encontrados.add(mov.get('ano', current_year))
+        for emp in st.session_state['empenhos_global']:
+            try:
+                dt = datetime.strptime(emp['data_empenho'], "%Y-%m-%d")
+                anos_encontrados.add(dt.year)
+            except:
+                pass
+        st.session_state['available_years'] = sorted(list(anos_encontrados))
+
 # --- FUNÇÕES CRUD ---
 def load_accounts_from_firebase(db):
     if db is None: return {}
@@ -116,14 +155,24 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES ARQUIVOS (2 ARQUIVOS) ---
-def save_files_to_firebase(db, empenho_id, file_nf, file_comprovante):
+# --- FUNÇÕES ARQUIVOS (AGORA COM 3 ARQUIVOS) ---
+def save_files_to_firebase(db, empenho_id, file_emp, file_nf, file_comprovante):
     if db is None: return False
     try:
         doc_ref = db.collection('pdde_arquivos').document(empenho_id)
         update_data = {}
         
-        # Nota Fiscal
+        # Processa Arquivo do Empenho
+        if file_emp:
+            if file_emp.size > 2 * 1024 * 1024:
+                st.warning(f"Arquivo do Empenho muito grande ({file_emp.name}). Limite 2MB.")
+            else:
+                file_bytes = file_emp.read()
+                b64_string = base64.b64encode(file_bytes).decode('utf-8')
+                update_data['emp_name'] = file_emp.name
+                update_data['emp_data'] = b64_string
+
+        # Processa Nota Fiscal
         if file_nf:
             if file_nf.size > 2 * 1024 * 1024:
                 st.warning(f"Nota Fiscal muito grande ({file_nf.name}). Limite 2MB.")
@@ -133,7 +182,7 @@ def save_files_to_firebase(db, empenho_id, file_nf, file_comprovante):
                 update_data['nf_name'] = file_nf.name
                 update_data['nf_data'] = b64_string
         
-        # Comprovante
+        # Processa Comprovante
         if file_comprovante:
             if file_comprovante.size > 2 * 1024 * 1024:
                 st.warning(f"Comprovante muito grande ({file_comprovante.name}). Limite 2MB.")
@@ -329,43 +378,6 @@ def create_empenho_pdf(data_dict):
     c.save()
     buffer.seek(0)
     return buffer
-
-def init_session_state():
-    db = init_firebase()
-    st.session_state['db_conn'] = db
-    
-    if 'accounts' not in st.session_state:
-        if db:
-            with st.spinner('Conectando ao banco de dados...'):
-                st.session_state['accounts'] = load_accounts_from_firebase(db)
-        else:
-            st.session_state['accounts'] = {}
-            
-    if 'empenhos_global' not in st.session_state:
-        if db:
-            st.session_state['empenhos_global'] = load_empenhos_from_firebase(db)
-        else:
-            st.session_state['empenhos_global'] = []
-
-    if 'global_programs' not in st.session_state:
-        if db:
-            st.session_state['global_programs'] = load_global_programs_from_firebase(db)
-        else:
-            st.session_state['global_programs'] = []
-        
-    if 'available_years' not in st.session_state:
-        current_year = datetime.now().year
-        anos_encontrados = set([current_year])
-        for conta in st.session_state['accounts'].values():
-            for mov in conta.get('movimentacoes', []):
-                anos_encontrados.add(mov.get('ano', current_year))
-        for emp in st.session_state['empenhos_global']:
-            try:
-                dt = datetime.strptime(emp['data_empenho'], "%Y-%m-%d")
-                anos_encontrados.add(dt.year)
-            except:
-                pass
-        st.session_state['available_years'] = sorted(list(anos_encontrados))
 
 def get_saldo_anterior(account_name, programa, tipo_recurso, mes_alvo, ano_alvo):
     conta_data = st.session_state['accounts'][account_name]
@@ -839,10 +851,10 @@ def render_resumo_consolidado_view():
     else: st.info("Nenhuma conta encontrada.")
 
 def render_empenhos_global_view():
-    st.subheader("📜 Controle de Empenhos e Ordens de Pagamento (Global)")
+    st.subheader("📜 Controle de Empenhos e Ordens de Pagamento")
     
     if not HAS_REPORTLAB:
-        st.warning("⚠️ Biblioteca 'reportlab' não encontrada. A geração de PDF estará desabilitada. (pip install reportlab)")
+        st.warning("⚠️ Biblioteca 'reportlab' não encontrada. A geração de PDF estará desabilitada.")
 
     with st.expander("⚙️ Cadastrar/Gerenciar Programas"):
         c_p1, c_p2 = st.columns([3, 1])
@@ -1006,25 +1018,31 @@ def render_empenhos_global_view():
             e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, height=100, key="form_itens")
 
             st.markdown("---")
-            st.subheader("📎 Anexos (Máx 2MB cada)")
+            st.subheader("📎 Anexos (Opcionais - Máx 2MB cada)")
             
-            # --- COMPATIBILIDADE COM ARQUIVOS ANTIGOS ---
-            if current_files.get('file_data'):
-                st.markdown("**🗃️ Arquivo Original (Legado)**")
-                st.markdown(f"<div class='download-box'>Arquivo Antigo: <b>{current_files.get('file_name', 'arquivo.pdf')}</b></div>", unsafe_allow_html=True)
-                try:
-                    bin_old = base64.b64decode(current_files.get('file_data'))
-                    st.download_button("⬇️ Baixar Arquivo Original", data=bin_old, file_name=current_files.get('file_name', 'arquivo.pdf'), key="dl_old")
-                except: 
-                    st.error("Erro no download.")
-                st.write("---")
-            
-            col_file1, col_file2 = st.columns(2)
+            # --- 3 COLUNAS PARA ANEXOS ---
+            col_file1, col_file2, col_file3 = st.columns(3)
             
             with col_file1:
+                st.markdown("**📄 Arquivo do Empenho**")
+                
+                # Suporte ao arquivo antigo (file_data) ou novo (emp_data)
+                emp_b64 = current_files.get('emp_data') or current_files.get('file_data')
+                emp_nm = current_files.get('emp_name') or current_files.get('file_name', 'empenho.pdf')
+                
+                if emp_b64:
+                    st.markdown(f"<div class='download-box'>Arquivo atual:<br><b>{emp_nm}</b></div>", unsafe_allow_html=True)
+                    try:
+                        bin_emp = base64.b64decode(emp_b64)
+                        st.download_button("⬇️ Baixar Empenho", data=bin_emp, file_name=emp_nm, key="dl_emp")
+                    except: st.error("Erro no download.")
+                
+                e_file_emp = st.file_uploader("Enviar Documento do Empenho", type=["pdf", "jpg", "png", "jpeg"], key="up_emp")
+
+            with col_file2:
                 st.markdown("**📁 Nota Fiscal**")
                 if current_files.get('nf_data'):
-                    st.markdown(f"<div class='download-box'>Arquivo atual: <b>{current_files.get('nf_name', 'nf.pdf')}</b></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='download-box'>Arquivo atual:<br><b>{current_files.get('nf_name', 'nf.pdf')}</b></div>", unsafe_allow_html=True)
                     try:
                         bin_nf = base64.b64decode(current_files.get('nf_data'))
                         st.download_button("⬇️ Baixar Nota Fiscal", data=bin_nf, file_name=current_files.get('nf_name', 'nf.pdf'), key="dl_nf")
@@ -1032,10 +1050,10 @@ def render_empenhos_global_view():
                 
                 e_file_nf = st.file_uploader("Enviar Nota Fiscal", type=["pdf", "jpg", "png", "jpeg"], key="up_nf")
 
-            with col_file2:
+            with col_file3:
                 st.markdown("**📂 Comprovante de Pagamento**")
                 if current_files.get('comp_data'):
-                    st.markdown(f"<div class='download-box'>Arquivo atual: <b>{current_files.get('comp_name', 'recibo.pdf')}</b></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='download-box'>Arquivo atual:<br><b>{current_files.get('comp_name', 'recibo.pdf')}</b></div>", unsafe_allow_html=True)
                     try:
                         bin_comp = base64.b64decode(current_files.get('comp_data'))
                         st.download_button("⬇️ Baixar Comprovante", data=bin_comp, file_name=current_files.get('comp_name', 'recibo.pdf'), key="dl_comp")
@@ -1049,10 +1067,11 @@ def render_empenhos_global_view():
             
             def run_save():
                 if not e_data:
-                    st.error("⚠️ Data do Empenho é obrigatória!")
+                    st.error("⚠️ A Data do Empenho é obrigatória!")
                     return
+                # Deixei bem claro que é a DATA que é obrigatória, não o arquivo.
                 if e_status == "EXECUTADO" and not e_data_nf:
-                    st.error("⚠️ Data Nota Fiscal é obrigatória para status Executado!")
+                    st.error("⚠️ Para o status EXECUTADO, preencha o campo 'Data Nota Fiscal' acima.")
                     return
 
                 str_d_emp = e_data.strftime("%Y-%m-%d")
@@ -1067,12 +1086,12 @@ def render_empenhos_global_view():
 
                 target_id = dados_edicao.get('id') if is_edit_mode else str(datetime.now().timestamp())
                 
-                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_nf, e_file_comp)
+                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_emp, e_file_nf, e_file_comp)
                 
                 has_any_file = False
-                if e_file_nf or e_file_comp: 
+                if e_file_emp or e_file_nf or e_file_comp: 
                     has_any_file = True
-                elif is_edit_mode and (current_files.get('nf_data') or current_files.get('comp_data') or current_files.get('file_data')): 
+                elif is_edit_mode and (current_files.get('emp_data') or current_files.get('file_data') or current_files.get('nf_data') or current_files.get('comp_data')): 
                     has_any_file = True
                 
                 payload['has_file'] = has_any_file 
@@ -1101,8 +1120,8 @@ def render_empenhos_global_view():
             if is_edit_mode:
                 with c_act3:
                     with st.popover("🗑️ Excluir"):
-                        st.write("Tem certeza?")
-                        if st.button("Sim, excluir permanentemente"):
+                        st.write("Tem certeza que deseja excluir permanentemente?")
+                        if st.button("Sim, excluir"):
                             t_id = dados_edicao.get('id')
                             st.session_state['empenhos_global'] = [e for e in st.session_state['empenhos_global'] if e.get('id') != t_id]
                             delete_file_from_firebase(st.session_state['db_conn'], t_id)
@@ -1111,6 +1130,7 @@ def render_empenhos_global_view():
                             st.session_state['empenho_mode'] = 'list'
                             st.rerun()
 
+# --- FUNÇÃO PRINCIPAL ---
 def main():
     try:
         init_session_state()
@@ -1199,7 +1219,7 @@ def main():
 
         elif modulo == "📈 Resumo Consolidado":
             render_resumo_consolidado_view()
-            
+
     except Exception as e:
         st.error(f"Ocorreu um erro no sistema: {e}")
 
