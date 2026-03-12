@@ -155,11 +155,9 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES ARQUIVOS (SALVAMENTO FRAGMENTADO PARA EVITAR LIMITE DE 1MB) ---
+# --- FUNÇÕES ARQUIVOS (AGORA COM 5 ARQUIVOS) ---
 def save_single_file(db, doc_id, file_obj, name_key, data_key):
-    """Salva um único arquivo em um documento separado"""
     if file_obj:
-        # Limite de ~750KB para evitar erro de 1MB do Firestore após Base64
         if file_obj.size > 750 * 1024:
             st.error(f"⚠️ O arquivo {file_obj.name} tem mais de 700KB. Por favor, comprima o arquivo antes de enviar.")
             return False
@@ -177,7 +175,6 @@ def save_single_file(db, doc_id, file_obj, name_key, data_key):
 def save_files_to_firebase(db, empenho_id, file_emp, file_nf, file_comprovante, file_cheque1, file_cheque2):
     if db is None: return False
     try:
-        # Salva cada arquivo em um documento SEPARADO para evitar o erro 400 (Max size 1MB)
         save_single_file(db, f"{empenho_id}_emp", file_emp, 'emp_name', 'emp_data')
         save_single_file(db, f"{empenho_id}_nf", file_nf, 'nf_name', 'nf_data')
         save_single_file(db, f"{empenho_id}_comp", file_comprovante, 'comp_name', 'comp_data')
@@ -193,12 +190,10 @@ def get_files_from_firebase(db, empenho_id):
     
     combined_data = {}
     try:
-        # Tenta buscar arquivo legado (antigo formato único)
         doc_legado = db.collection('pdde_arquivos').document(empenho_id).get()
         if doc_legado.exists:
             combined_data.update(doc_legado.to_dict())
 
-        # Busca os documentos fragmentados
         docs_to_check = [
             (f"{empenho_id}_emp", 'emp_name', 'emp_data'),
             (f"{empenho_id}_nf", 'nf_name', 'nf_data'),
@@ -222,7 +217,6 @@ def delete_file_from_firebase(db, empenho_id):
     if db is None: return
     try:
         col = db.collection('pdde_arquivos')
-        # Apaga o legado e os fragmentos
         col.document(empenho_id).delete()
         col.document(f"{empenho_id}_emp").delete()
         col.document(f"{empenho_id}_nf").delete()
@@ -927,18 +921,20 @@ def render_empenhos_global_view():
         st.markdown(f"**Registros Encontrados: {len(lista_final)}**")
 
         if lista_final:
-            c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 2, 1, 1.2, 1.2, 0.8, 0.8])
+            # --- MUDANÇA NA TABELA: ADICIONADA COLUNA "ANEXOS" ---
+            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.2, 2, 1, 1.2, 1.2, 0.8, 0.8, 0.8])
             c1.markdown("<div class='row-header'>Data</div>", unsafe_allow_html=True)
             c2.markdown("<div class='row-header'>Programa</div>", unsafe_allow_html=True)
             c3.markdown("<div class='row-header'>Nº Emp.</div>", unsafe_allow_html=True)
             c4.markdown("<div class='row-header'>Valor</div>", unsafe_allow_html=True)
             c5.markdown("<div class='row-header'>Status</div>", unsafe_allow_html=True)
             c6.markdown("<div class='row-header'>PDF</div>", unsafe_allow_html=True)
-            c7.markdown("<div class='row-header'>Ação</div>", unsafe_allow_html=True)
+            c7.markdown("<div class='row-header'>Anexos</div>", unsafe_allow_html=True)
+            c8.markdown("<div class='row-header'>Ação</div>", unsafe_allow_html=True)
 
             for item in lista_final:
                 with st.container():
-                    col1, col2, col3, col4, col5, col6, col7 = st.columns([1.2, 2, 1, 1.2, 1.2, 0.8, 0.8])
+                    col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1.2, 2, 1, 1.2, 1.2, 0.8, 0.8, 0.8])
                     try: d_show = datetime.strptime(item.get('data_empenho', ''), "%Y-%m-%d").strftime("%d/%m/%Y")
                     except: d_show = "-"
                     val_show = format_currency(float(item.get('valor', 0)))
@@ -955,7 +951,40 @@ def render_empenhos_global_view():
                     else:
                         col6.text("-")
 
-                    if col7.button("✏️", key=f"btn_edit_{item['id']}"):
+                    # --- NOVO BOTÃO DE ANEXOS DIRETO NA TABELA ---
+                    if item.get('has_file'):
+                        with col7.popover("📎"):
+                            st.caption("Arquivos Salvos")
+                            files = get_files_from_firebase(st.session_state['db_conn'], item['id'])
+                            has_any = False
+                            
+                            emp_b64 = files.get('emp_data') or files.get('file_data')
+                            if emp_b64:
+                                st.download_button("📄 Empenho", data=base64.b64decode(emp_b64), file_name=files.get('emp_name') or files.get('file_name', 'empenho.pdf'), key=f"dl_p_emp_{item['id']}")
+                                has_any = True
+                                
+                            if files.get('nf_data'):
+                                st.download_button("📁 Nota Fiscal", data=base64.b64decode(files.get('nf_data')), file_name=files.get('nf_name', 'nf.pdf'), key=f"dl_p_nf_{item['id']}")
+                                has_any = True
+                                
+                            if files.get('comp_data'):
+                                st.download_button("📂 Comprovante", data=base64.b64decode(files.get('comp_data')), file_name=files.get('comp_name', 'recibo.pdf'), key=f"dl_p_comp_{item['id']}")
+                                has_any = True
+                                
+                            if files.get('chq_data'):
+                                st.download_button("🎟️ Cheque 1", data=base64.b64decode(files.get('chq_data')), file_name=files.get('chq_name', 'cheque1.pdf'), key=f"dl_p_chq_{item['id']}")
+                                has_any = True
+                                
+                            if files.get('chq2_data'):
+                                st.download_button("🎟️ Cheque 2", data=base64.b64decode(files.get('chq2_data')), file_name=files.get('chq2_name', 'cheque2.pdf'), key=f"dl_p_chq2_{item['id']}")
+                                has_any = True
+                                
+                            if not has_any:
+                                st.write("Erro ao carregar arquivos.")
+                    else:
+                        col7.text("-")
+
+                    if col8.button("✏️", key=f"btn_edit_{item['id']}"):
                         st.session_state['empenho_em_edicao'] = item
                         st.session_state['empenho_mode'] = 'form'
                         st.rerun()
@@ -1025,7 +1054,7 @@ def render_empenhos_global_view():
                 status_idx = 1
                 
             e_status = ce7.selectbox("Status", status_opts, index=status_idx, key="form_status")
-            e_data_nf = ce8.date_input("Data NF / Cheque", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
+            e_data_nf = ce8.date_input("Data NF / Cheque / Recibo", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
             e_obs = ce9.text_input("Observação", value=val_obs, key="form_obs")
             
             e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, height=100, key="form_itens")
