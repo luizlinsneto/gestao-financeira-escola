@@ -155,8 +155,8 @@ def load_global_programs_from_firebase(db):
     except Exception as e:
         return []
 
-# --- FUNÇÕES ARQUIVOS (AGORA COM 3 ARQUIVOS) ---
-def save_files_to_firebase(db, empenho_id, file_emp, file_nf, file_comprovante):
+# --- FUNÇÕES ARQUIVOS (AGORA COM 4 ARQUIVOS) ---
+def save_files_to_firebase(db, empenho_id, file_emp, file_nf, file_comprovante, file_cheque):
     if db is None: return False
     try:
         doc_ref = db.collection('pdde_arquivos').document(empenho_id)
@@ -191,6 +191,16 @@ def save_files_to_firebase(db, empenho_id, file_emp, file_nf, file_comprovante):
                 b64_string = base64.b64encode(file_bytes).decode('utf-8')
                 update_data['comp_name'] = file_comprovante.name
                 update_data['comp_data'] = b64_string
+
+        # Processa Cheque
+        if file_cheque:
+            if file_cheque.size > 2 * 1024 * 1024:
+                st.warning(f"Cheque muito grande ({file_cheque.name}). Limite 2MB.")
+            else:
+                file_bytes = file_cheque.read()
+                b64_string = base64.b64encode(file_bytes).decode('utf-8')
+                update_data['chq_name'] = file_cheque.name
+                update_data['chq_data'] = b64_string
 
         if update_data:
             doc_ref.set(update_data, merge=True)
@@ -334,7 +344,7 @@ def create_empenho_pdf(data_dict):
     draw_pair("Data OB", d_ob, left_margin + 9 * cm, y)
     y -= 0.6 * cm
     draw_pair("Status Atual", data_dict.get('status'), left_margin, y)
-    draw_pair("Data Nota Fiscal", d_nf, left_margin + 9 * cm, y)
+    draw_pair("Data NF/Cheque", d_nf, left_margin + 9 * cm, y)
     
     y -= 1.5 * cm
     c.setFont("Helvetica-Bold", 12)
@@ -1010,26 +1020,23 @@ def render_empenhos_global_view():
                 status_idx = 1
                 
             e_status = ce7.selectbox("Status", status_opts, index=status_idx, key="form_status")
-            e_data_nf = None
-            if e_status == "EXECUTADO":
-                e_data_nf = ce8.date_input("Data Nota Fiscal", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
-            else: ce8.write("---")
+            # --- MUDANÇA NO LABEL: Agora aceita Cheque/Recibo
+            e_data_nf = ce8.date_input("Data NF / Cheque / Recibo", value=val_data_nf, format="DD/MM/YYYY", key="form_data_nf")
             e_obs = ce9.text_input("Observação", value=val_obs, key="form_obs")
+            
             e_itens = st.text_area("Itens Comprados / Descrição", value=val_itens, height=100, key="form_itens")
 
             st.markdown("---")
             st.subheader("📎 Anexos (Opcionais - Máx 2MB cada)")
             
-            # --- 3 COLUNAS PARA ANEXOS ---
-            col_file1, col_file2, col_file3 = st.columns(3)
+            # --- ORGANIZANDO OS 4 UPLOADS EM DUAS LINHAS ---
+            col_file1, col_file2 = st.columns(2)
+            col_file3, col_file4 = st.columns(2)
             
             with col_file1:
                 st.markdown("**📄 Arquivo do Empenho**")
-                
-                # Suporte ao arquivo antigo (file_data) ou novo (emp_data)
                 emp_b64 = current_files.get('emp_data') or current_files.get('file_data')
                 emp_nm = current_files.get('emp_name') or current_files.get('file_name', 'empenho.pdf')
-                
                 if emp_b64:
                     st.markdown(f"<div class='download-box'>Arquivo atual:<br><b>{emp_nm}</b></div>", unsafe_allow_html=True)
                     try:
@@ -1060,6 +1067,17 @@ def render_empenhos_global_view():
                     except: st.error("Erro no download.")
                 
                 e_file_comp = st.file_uploader("Enviar Comprovante", type=["pdf", "jpg", "png", "jpeg"], key="up_comp")
+                
+            with col_file4:
+                st.markdown("**🎟️ Cheque(s) / Recibo**")
+                if current_files.get('chq_data'):
+                    st.markdown(f"<div class='download-box'>Arquivo atual:<br><b>{current_files.get('chq_name', 'cheque.pdf')}</b></div>", unsafe_allow_html=True)
+                    try:
+                        bin_chq = base64.b64decode(current_files.get('chq_data'))
+                        st.download_button("⬇️ Baixar Cheque", data=bin_chq, file_name=current_files.get('chq_name', 'cheque.pdf'), key="dl_chq")
+                    except: st.error("Erro no download.")
+                
+                e_file_cheque = st.file_uploader("Enviar Cheque(s)", type=["pdf", "jpg", "png", "jpeg"], key="up_chq")
 
             st.markdown("---")
 
@@ -1069,11 +1087,10 @@ def render_empenhos_global_view():
                 if not e_data:
                     st.error("⚠️ A Data do Empenho é obrigatória!")
                     return
-                # Deixei bem claro que é a DATA que é obrigatória, não o arquivo.
-                if e_status == "EXECUTADO" and not e_data_nf:
-                    st.error("⚠️ Para o status EXECUTADO, preencha o campo 'Data Nota Fiscal' acima.")
-                    return
-
+                    
+                # --- REMOVIDA A TRAVA OBRIGATÓRIA PARA A NOTA FISCAL/CHEQUE ---
+                # Agora o usuário pode salvar sem data se quiser.
+                
                 str_d_emp = e_data.strftime("%Y-%m-%d")
                 str_d_ob = e_data_ob.strftime("%Y-%m-%d") if e_data_ob else ""
                 str_d_nf = e_data_nf.strftime("%Y-%m-%d") if e_data_nf else ""
@@ -1086,12 +1103,13 @@ def render_empenhos_global_view():
 
                 target_id = dados_edicao.get('id') if is_edit_mode else str(datetime.now().timestamp())
                 
-                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_emp, e_file_nf, e_file_comp)
+                # Salva os 4 tipos de arquivos
+                save_files_to_firebase(st.session_state['db_conn'], target_id, e_file_emp, e_file_nf, e_file_comp, e_file_cheque)
                 
                 has_any_file = False
-                if e_file_emp or e_file_nf or e_file_comp: 
+                if e_file_emp or e_file_nf or e_file_comp or e_file_cheque: 
                     has_any_file = True
-                elif is_edit_mode and (current_files.get('emp_data') or current_files.get('file_data') or current_files.get('nf_data') or current_files.get('comp_data')): 
+                elif is_edit_mode and (current_files.get('emp_data') or current_files.get('file_data') or current_files.get('nf_data') or current_files.get('comp_data') or current_files.get('chq_data')): 
                     has_any_file = True
                 
                 payload['has_file'] = has_any_file 
@@ -1130,7 +1148,6 @@ def render_empenhos_global_view():
                             st.session_state['empenho_mode'] = 'list'
                             st.rerun()
 
-# --- FUNÇÃO PRINCIPAL ---
 def main():
     try:
         init_session_state()
@@ -1173,7 +1190,7 @@ def main():
                         cp1.markdown(f"📌 **{p_name}**")
                         if cp2.button("🗑️", key=f"del_prog_{conta}_{p_idx}"):
                             programas.pop(p_idx)
-                            st.session_state['accounts'][conta]['programas'] = programas
+                            st.session_state['accounts'][conta]['programas'] = programs
                             save_account_to_firebase(st.session_state['db_conn'], conta, st.session_state['accounts'][conta])
                             st.rerun()
                     
@@ -1219,7 +1236,7 @@ def main():
 
         elif modulo == "📈 Resumo Consolidado":
             render_resumo_consolidado_view()
-
+            
     except Exception as e:
         st.error(f"Ocorreu um erro no sistema: {e}")
 
